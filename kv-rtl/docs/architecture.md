@@ -1,30 +1,45 @@
-# Checkpoint 0 — Architecture
+# Checkpoint 1 — Architecture
 
-This checkpoint establishes the RTL development environment only. The `top`
-module is an infrastructure placeholder, not KV-cache logic.
-
-## Layers
+## Components
 
 ```text
-Rust test / runtime harness
+Rust harness + PageTracker reference model
         │
         ▼
-Simulator trait (kv_rtl::Simulator)
+MetadataSimulator trait
         │
         ▼
 C ABI (sim/simulator.h)
         │
         ▼
-Verilator model (Vtop)
+Verilator (top → kv_page_tracker)
         │
         ▼
-RTL (rtl/top.sv)
+rtl/kv_pkg.sv + rtl/kv_page_tracker.sv
 ```
 
-## RTL behavior
+## RTL modules
 
-`top` accepts a 32-bit word when `input_valid` is asserted. One cycle later it
-asserts `output_valid` and drives `output_data = captured_input + 1`.
+| Module | Role |
+|--------|------|
+| `kv_pkg` | Width parameters, opcodes, saturation helpers |
+| `kv_page_tracker` | Single-page metadata storage and event processing |
+| `top` | Thin wrapper exposing the tracker as the simulation top |
 
-This exercises reset, clocking, handshake signals, and fixed latency — the
-minimum needed before metadata engines are introduced in checkpoint 1.
+## Data tracked per page
+
+- `page_id`, `request_id`
+- `access_count` (saturating)
+- `last_access` (from event timestamp on READ/WRITE)
+- `refcount` (saturating increment on ALLOCATE, decrement on RELEASE)
+- `valid` / `state`
+
+Policy (LRU, frequency, etc.) is **not** implemented here — only metadata
+storage and explicit updates from access events (Principle 2).
+
+## Timing model
+
+Two-cycle event pipeline: latch on cycle *N*, commit on cycle *N+1*.
+`hw_timestamp` increments every committed cycle.
+
+See [protocol.md](protocol.md) for signal-level detail.

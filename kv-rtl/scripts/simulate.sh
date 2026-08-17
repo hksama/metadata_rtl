@@ -11,9 +11,9 @@ WAVE_FMT="${WAVE_FMT:-vcd}"
 mkdir -p "${TRACE_DIR}"
 
 if [[ "${WAVE_FMT}" == "fst" ]]; then
-    WAVE_FILE="${TRACE_DIR}/checkpoint0.fst"
+    WAVE_FILE="${TRACE_DIR}/checkpoint1.fst"
 else
-    WAVE_FILE="${TRACE_DIR}/checkpoint0.vcd"
+    WAVE_FILE="${TRACE_DIR}/checkpoint1.vcd"
 fi
 
 echo "Running C++ cycle-by-cycle testbench..."

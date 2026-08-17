@@ -21,7 +21,7 @@ rust-test: verilate
 	cd $(RUST_DIR) && cargo run --release
 
 test: verilate cpp-test rust-test
-	@echo "All checkpoint 0 tests passed."
+	@echo "All checkpoint 1 tests passed."
 
 simulate:
 	./scripts/simulate.sh

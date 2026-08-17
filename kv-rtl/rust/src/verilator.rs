@@ -1,10 +1,30 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-use crate::Simulator;
+use crate::types::{AccessEvent, PageMetadata, PageState};
+use crate::MetadataSimulator;
 
 #[repr(C)]
 struct SimHandle(c_void);
+
+#[repr(C)]
+struct KvEvent {
+    operation: u8,
+    request_id: u16,
+    page_id: u16,
+    event_timestamp: u16,
+}
+
+#[repr(C)]
+struct KvMetadata {
+    valid: u8,
+    page_id: u16,
+    request_id: u16,
+    access_count: u16,
+    last_access: u16,
+    refcount: u8,
+    state: u8,
+}
 
 extern "C" {
     fn sim_create() -> *mut SimHandle;
@@ -12,9 +32,12 @@ extern "C" {
     fn sim_destroy(sim: *mut SimHandle);
     fn sim_reset(sim: *mut SimHandle);
     fn sim_tick(sim: *mut SimHandle);
-    fn sim_drive(sim: *mut SimHandle, input_valid: c_int, input_data: c_uint);
-    fn sim_output_valid(sim: *const SimHandle) -> c_int;
-    fn sim_output_data(sim: *const SimHandle) -> c_uint;
+    fn sim_drive_event(sim: *mut SimHandle, event_valid: c_int, event: *const KvEvent);
+    fn sim_deassert_event(sim: *mut SimHandle);
+    fn sim_resp_valid(sim: *const SimHandle) -> c_int;
+    fn sim_resp_error(sim: *const SimHandle) -> c_int;
+    fn sim_read_metadata(sim: *const SimHandle, out: *mut KvMetadata);
+    fn sim_hw_timestamp(sim: *const SimHandle) -> c_uint;
     fn sim_cycle_count(sim: *const SimHandle) -> u64;
     fn sim_finalize_trace(sim: *mut SimHandle);
 }
@@ -46,7 +69,32 @@ impl Drop for VerilatorSimulator {
     }
 }
 
-impl Simulator for VerilatorSimulator {
+fn to_kv_event(event: &AccessEvent) -> KvEvent {
+    KvEvent {
+        operation: event.operation as u8,
+        request_id: event.request_id,
+        page_id: event.page_id,
+        event_timestamp: event.timestamp,
+    }
+}
+
+fn from_kv_metadata(raw: KvMetadata) -> PageMetadata {
+    PageMetadata {
+        page_id: raw.page_id,
+        request_id: raw.request_id,
+        access_count: raw.access_count,
+        last_access: raw.last_access,
+        refcount: raw.refcount,
+        valid: raw.valid != 0,
+        state: if raw.state == PageState::Valid as u8 {
+            PageState::Valid
+        } else {
+            PageState::Invalid
+        },
+    }
+}
+
+impl MetadataSimulator for VerilatorSimulator {
     fn reset(&mut self) {
         unsafe { sim_reset(self.handle) };
     }
@@ -55,18 +103,39 @@ impl Simulator for VerilatorSimulator {
         unsafe { sim_tick(self.handle) };
     }
 
-    fn drive_input(&mut self, valid: bool, data: u32) {
-        unsafe {
-            sim_drive(self.handle, i32::from(valid), data);
-        }
+    fn drive_event(&mut self, event: &AccessEvent) {
+        let kv = to_kv_event(event);
+        unsafe { sim_drive_event(self.handle, 1, &kv) };
     }
 
-    fn output_valid(&self) -> bool {
-        unsafe { sim_output_valid(self.handle) != 0 }
+    fn deassert_event(&mut self) {
+        unsafe { sim_deassert_event(self.handle) };
     }
 
-    fn output_data(&self) -> u32 {
-        unsafe { sim_output_data(self.handle) }
+    fn resp_valid(&self) -> bool {
+        unsafe { sim_resp_valid(self.handle) != 0 }
+    }
+
+    fn resp_error(&self) -> bool {
+        unsafe { sim_resp_error(self.handle) != 0 }
+    }
+
+    fn metadata(&self) -> PageMetadata {
+        let mut raw = KvMetadata {
+            valid: 0,
+            page_id: 0,
+            request_id: 0,
+            access_count: 0,
+            last_access: 0,
+            refcount: 0,
+            state: 0,
+        };
+        unsafe { sim_read_metadata(self.handle, &mut raw) };
+        from_kv_metadata(raw)
+    }
+
+    fn hw_timestamp(&self) -> u16 {
+        unsafe { sim_hw_timestamp(self.handle) as u16 }
     }
 
     fn cycle_count(&self) -> u64 {

@@ -1,4 +1,4 @@
-// C ABI for the Verilator-backed simulator. Consumed by Rust via FFI.
+// C ABI for the Verilator-backed KV page metadata simulator.
 #pragma once
 
 #include <stdint.h>
@@ -9,6 +9,23 @@ extern "C" {
 
 typedef struct SimHandle SimHandle;
 
+typedef struct {
+    uint8_t  operation;
+    uint16_t request_id;
+    uint16_t page_id;
+    uint16_t event_timestamp;
+} KvEvent;
+
+typedef struct {
+    uint8_t  valid;
+    uint16_t page_id;
+    uint16_t request_id;
+    uint16_t access_count;
+    uint16_t last_access;
+    uint8_t  refcount;
+    uint8_t  state;
+} KvMetadata;
+
 SimHandle* sim_create(void);
 SimHandle* sim_create_traced(const char* path);
 void       sim_destroy(SimHandle* sim);
@@ -16,15 +33,16 @@ void       sim_destroy(SimHandle* sim);
 void sim_reset(SimHandle* sim);
 void sim_tick(SimHandle* sim);
 
-void sim_drive(SimHandle* sim, int input_valid, uint32_t input_data);
+void sim_drive_event(SimHandle* sim, int event_valid, const KvEvent* event);
+void sim_deassert_event(SimHandle* sim);
 
-int      sim_output_valid(const SimHandle* sim);
-uint32_t sim_output_data(const SimHandle* sim);
+int      sim_resp_valid(const SimHandle* sim);
+int      sim_resp_error(const SimHandle* sim);
+void     sim_read_metadata(const SimHandle* sim, KvMetadata* out);
+uint32_t sim_hw_timestamp(const SimHandle* sim);
 
 uint64_t sim_cycle_count(const SimHandle* sim);
 
-// Optional waveform tracing (must be requested at creation time).
-int  sim_enable_trace(SimHandle* sim, const char* path);
 void sim_finalize_trace(SimHandle* sim);
 
 #ifdef __cplusplus

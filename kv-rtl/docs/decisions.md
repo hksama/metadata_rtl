@@ -1,27 +1,36 @@
-# Design decisions — Checkpoint 0
+# Design decisions — Checkpoint 1
 
-## D0.1 — Placeholder RTL instead of early metadata
+## D1.1 — Single page only
 
-The first module intentionally performs `input + 1` so infrastructure (build,
-simulation, Rust harness, waveforms) can be validated before KV metadata logic
-is added in checkpoint 1.
+Checkpoint 1 tracks one page. `page_id` in events is checked against the
+stored id; mismatches are rejected. Multi-page tables come in checkpoint 2.
 
-## D0.2 — C ABI between Rust and Verilator
+## D1.2 — Two-cycle event pipeline
 
-Rust links against a thin C wrapper (`sim/simulator.cpp`) rather than generated
-Verilator C++ classes. This keeps the Rust side stable as RTL complexity grows.
+Events are latched on cycle *N* and committed on *N+1* so timing is explicit
+and testable, consistent with checkpoint 0 infrastructure patterns.
 
-## D0.3 — One-cycle fixed latency
+## D1.3 — WRITE mirrors READ for metadata
 
-The placeholder pipeline registers inputs before producing outputs so tests can
-detect latency regressions.
+`WRITE` increments `access_count` and updates `last_access`, same as `READ`.
+Future checkpoints may differentiate write-side policy without changing the
+event opcode layout.
 
-## D0.4 — Dual test entry points
+## D1.4 — Saturating arithmetic
 
-Both a C++ cycle test (`tests/cpp/tb_top.cpp`) and a Rust harness exercise the
-same simulator API. `make test` runs both.
+`access_count` and `refcount` use saturating increment/decrement. Overflow and
+underflow never wrap silently.
 
-## D0.5 — VCD default, FST optional
+## D1.5 — Rust `PageTracker` is golden
 
-VCD is the default waveform format for broad gtkwave compatibility. Set
-`WAVE_FMT=fst` or `TRACE_FMT=fst` to emit FST instead.
+All differential tests compare Verilator output against `PageTracker`. Mismatches
+print event index, event, expected metadata, and actual metadata.
+
+## D1.6 — `hw_timestamp` wraps
+
+The free-running hardware timestamp wraps at `2^TIMESTAMP_WIDTH`. Tests verify
+wrap in the reference model; RTL and Rust stay cycle-aligned on idle ticks.
+
+## D1.7 — Rejected events do not mutate metadata
+
+`resp_error=1` means the latched event had no effect on stored metadata.

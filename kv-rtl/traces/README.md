@@ -2,14 +2,20 @@
 
 Synthetic and recorded access traces for KV-cache metadata evaluation will live here.
 
-## Checkpoint 0
+## Checkpoint 1
 
-Waveforms from the infrastructure smoke test are written to `synthetic/`:
+Waveforms from the single-page metadata tracker:
 
-- `checkpoint0.vcd` — default VCD output from `make simulate`
-- `checkpoint0.fst` — FST output when `WAVE_FMT=fst make simulate`
+- `checkpoint1.vcd` — default from `make simulate`
+- `checkpoint1.fst` — when `WAVE_FMT=fst make simulate`
 
-Signals to inspect: `clk`, `rst`, `input_valid`, `input_data`, `output_valid`, `output_data`.
+Key signals under `top`: `event_valid`, `operation`, `page_id`, `request_id`,
+`event_timestamp`, `resp_valid`, `resp_error`, `meta_valid`, `meta_access_count`,
+`meta_refcount`, `hw_timestamp`.
+
+## Checkpoint 0 (historical)
+
+Earlier infrastructure smoke tests used `checkpoint0.vcd`.
 
 ## Viewing waveforms
 

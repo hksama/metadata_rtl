@@ -4,7 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT}/build"
 VERILATOR_DIR="${BUILD_DIR}/verilator"
-RTL="${ROOT}/rtl/top.sv"
+RTL_FILES=(
+    "${ROOT}/rtl/kv_pkg.sv"
+    "${ROOT}/rtl/kv_page_tracker.sv"
+    "${ROOT}/rtl/top.sv"
+)
 VERILATOR_INCLUDE="${VERILATOR_INCLUDE:-/usr/share/verilator/include}"
 
 mkdir -p "${BUILD_DIR}"
@@ -16,12 +20,12 @@ if [[ "${TRACE_FMT}" == "fst" ]]; then
 fi
 
 verilator \
-    -Wall -Wno-DECLFILENAME \
+    -Wall -Wno-DECLFILENAME -Wno-IMPORTSTAR \
     --cc \
     -Mdir "${VERILATOR_DIR}" \
     --top-module top \
     --trace \
-    "${RTL}"
+    "${RTL_FILES[@]}"
 
 make -C "${VERILATOR_DIR}" -f Vtop.mk VM_PARALLEL_BUILDS=1 -j"$(nproc)"
 

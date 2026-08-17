@@ -12,8 +12,6 @@
 #endif
 
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 
 struct SimHandle {
     Vtop*            top;
@@ -28,10 +26,17 @@ struct SimHandle {
 #endif
 };
 
+static void clear_event_inputs(SimHandle* sim) {
+    sim->top->event_valid = 0;
+    sim->top->request_id = 0;
+    sim->top->page_id = 0;
+    sim->top->event_timestamp = 0;
+    sim->top->operation = 0;
+}
+
 static void apply_reset(SimHandle* sim, int cycles) {
     sim->top->rst = 1;
-    sim->top->input_valid = 0;
-    sim->top->input_data = 0;
+    clear_event_inputs(sim);
     for (int i = 0; i < cycles; ++i) {
         sim->top->clk = 0;
         sim->top->eval();
@@ -128,27 +133,44 @@ void sim_tick(SimHandle* sim) {
     ++sim->cycle_count;
 }
 
-void sim_drive(SimHandle* sim, int input_valid, uint32_t input_data) {
-    sim->top->input_valid = input_valid ? 1 : 0;
-    sim->top->input_data = input_data;
+void sim_drive_event(SimHandle* sim, int event_valid, const KvEvent* event) {
+    sim->top->event_valid = event_valid ? 1 : 0;
+    if (event) {
+        sim->top->request_id = event->request_id;
+        sim->top->page_id = event->page_id;
+        sim->top->event_timestamp = event->event_timestamp;
+        sim->top->operation = event->operation;
+    }
 }
 
-int sim_output_valid(const SimHandle* sim) {
-    return sim->top->output_valid ? 1 : 0;
+void sim_deassert_event(SimHandle* sim) {
+    clear_event_inputs(sim);
 }
 
-uint32_t sim_output_data(const SimHandle* sim) {
-    return static_cast<uint32_t>(sim->top->output_data);
+int sim_resp_valid(const SimHandle* sim) {
+    return sim->top->resp_valid ? 1 : 0;
+}
+
+int sim_resp_error(const SimHandle* sim) {
+    return sim->top->resp_error ? 1 : 0;
+}
+
+void sim_read_metadata(const SimHandle* sim, KvMetadata* out) {
+    out->valid = sim->top->meta_valid ? 1 : 0;
+    out->page_id = static_cast<uint16_t>(sim->top->meta_page_id);
+    out->request_id = static_cast<uint16_t>(sim->top->meta_request_id);
+    out->access_count = static_cast<uint16_t>(sim->top->meta_access_count);
+    out->last_access = static_cast<uint16_t>(sim->top->meta_last_access);
+    out->refcount = static_cast<uint8_t>(sim->top->meta_refcount);
+    out->state = static_cast<uint8_t>(sim->top->meta_state);
+}
+
+uint32_t sim_hw_timestamp(const SimHandle* sim) {
+    return static_cast<uint32_t>(sim->top->hw_timestamp);
 }
 
 uint64_t sim_cycle_count(const SimHandle* sim) {
     return sim->cycle_count;
-}
-
-int sim_enable_trace(SimHandle* sim, const char* path) {
-    (void)sim;
-    (void)path;
-    return -1;
 }
 
 void sim_finalize_trace(SimHandle* sim) {

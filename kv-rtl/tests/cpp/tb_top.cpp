@@ -1,8 +1,7 @@
-// Cycle-by-cycle C++ testbench for checkpoint 0 infrastructure validation.
+// Smoke test for checkpoint 1 single-page metadata tracker.
 
 #include "simulator.h"
 
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
@@ -13,8 +12,13 @@ int fail(const char* msg) {
     return 1;
 }
 
-void deassert_inputs(SimHandle* sim) {
-    sim_drive(sim, 0, 0);
+void drive(SimHandle* sim, uint8_t op, uint16_t req, uint16_t page, uint16_t ts) {
+    KvEvent ev{};
+    ev.operation = op;
+    ev.request_id = req;
+    ev.page_id = page;
+    ev.event_timestamp = ts;
+    sim_drive_event(sim, 1, &ev);
 }
 
 }  // namespace
@@ -25,65 +29,36 @@ int main() {
         return fail("sim_create returned null");
     }
 
-    // After reset, output must be idle.
-    if (sim_output_valid(sim)) {
-        return fail("output_valid asserted immediately after reset");
+    if (sim_resp_valid(sim)) {
+        return fail("resp_valid asserted after reset");
     }
 
-    // Drive one transaction; expect result one cycle later.
-    const uint32_t input = 41;
-    const uint32_t expected = input + 1;
-
-    sim_drive(sim, 1, input);
+    drive(sim, 3, 42, 173, 5);  // ALLOCATE
+    sim_tick(sim);
+    sim_deassert_event(sim);
     sim_tick(sim);
 
-    if (sim_output_valid(sim)) {
-        return fail("output_valid asserted too early (latency violation)");
+    if (!sim_resp_valid(sim) || sim_resp_error(sim)) {
+        return fail("allocate response incorrect");
     }
 
-    deassert_inputs(sim);
-    sim_tick(sim);
-
-    if (!sim_output_valid(sim)) {
-        return fail("output_valid not asserted after expected latency");
-    }
-    if (sim_output_data(sim) != expected) {
-        return fail("incorrect output_data after single transaction");
+    KvMetadata meta{};
+    sim_read_metadata(sim, &meta);
+    if (!meta.valid || meta.page_id != 173 || meta.refcount != 1) {
+        return fail("metadata after allocate incorrect");
     }
 
-    // Idle cycle should deassert output_valid.
+    drive(sim, 0, 42, 173, 99);  // READ
     sim_tick(sim);
-    if (sim_output_valid(sim)) {
-        return fail("output_valid stuck high without input_valid");
+    sim_deassert_event(sim);
+    sim_tick(sim);
+
+    sim_read_metadata(sim, &meta);
+    if (meta.access_count != 1 || meta.last_access != 99) {
+        return fail("metadata after read incorrect");
     }
 
-    // Reset should clear state again.
-    sim_drive(sim, 1, 7);
-    sim_tick(sim);
-    sim_reset(sim);
-
-    if (sim_output_valid(sim)) {
-        return fail("output_valid asserted after reset");
-    }
-
-    // Back-to-back transactions.
-    sim_drive(sim, 1, 10);
-    sim_tick(sim);
-    deassert_inputs(sim);
-    sim_tick(sim);
-    if (!sim_output_valid(sim) || sim_output_data(sim) != 11) {
-        return fail("first back-to-back transaction incorrect");
-    }
-
-    sim_drive(sim, 1, 20);
-    sim_tick(sim);
-    deassert_inputs(sim);
-    sim_tick(sim);
-    if (!sim_output_valid(sim) || sim_output_data(sim) != 21) {
-        return fail("second back-to-back transaction incorrect");
-    }
-
-    std::printf("PASS: C++ cycle-by-cycle tests (%llu cycles)\n",
+    std::printf("PASS: C++ checkpoint 1 smoke tests (%llu cycles)\n",
                 static_cast<unsigned long long>(sim_cycle_count(sim)));
 
     sim_destroy(sim);

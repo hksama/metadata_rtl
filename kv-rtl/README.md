@@ -1,17 +1,14 @@
-# KV-RTL — Checkpoint 0
+# KV-RTL — Checkpoint 1
 
-Infrastructure for KV-cache metadata RTL development: SystemVerilog, Verilator,
-Rust harness, and waveform debug.
-
-This checkpoint validates the build/simulation pipeline only. `rtl/top.sv` is a
-placeholder (`output = input + 1`, one-cycle latency) — not KV-cache logic.
+Hardware-assisted KV-cache **single-page metadata tracker**: SystemVerilog,
+Verilator, Rust reference model, and differential tests.
 
 ## Prerequisites
 
-- [Verilator](https://www.veripool.org/verilator/) 5.x
-- Rust toolchain (`cargo`)
+- Verilator 5.x
+- Rust (`cargo`)
 - `g++`, `make`
-- [GTKWave](https://gtkwave.sourceforge.net/) (optional, for waveforms)
+- GTKWave (optional)
 
 ## Quick start
 
@@ -20,69 +17,37 @@ cd kv-rtl
 make test
 ```
 
-`make test` will:
-
-1. Verilate `rtl/top.sv`
-2. Build the C++ cycle-by-cycle testbench
-3. Run C++ and Rust validation
-4. Exit non-zero on any failure
-
-## Other commands
-
-| Command          | Description                                      |
-|------------------|--------------------------------------------------|
-| `make verilate`  | Build Verilator model and C++ test binary        |
-| `make simulate`  | Run tests and capture a waveform under `traces/` |
-| `make clean`     | Remove build artifacts                           |
+`make test` builds RTL, runs C++ smoke tests, Rust differential tests (edge
+cases + 500 random events), and exits non-zero on mismatch.
 
 ## Waveforms
 
-Generate a VCD trace:
-
 ```bash
 make simulate
-gtkwave traces/synthetic/checkpoint0.vcd
+gtkwave traces/synthetic/checkpoint1.vcd
 ```
 
-FST output:
-
-```bash
-WAVE_FMT=fst make simulate
-gtkwave traces/synthetic/checkpoint0.fst
-```
-
-Inspect `clk`, `rst`, `input_valid`, `input_data`, `output_valid`, and
-`output_data` under the `top` scope.
-
-See [traces/README.md](traces/README.md) for details.
+Signals: `event_valid`, `operation`, `page_id`, `request_id`, `event_timestamp`,
+`resp_valid`, `resp_error`, `meta_*`, `hw_timestamp`.
 
 ## Layout
 
 ```text
-rtl/        SystemVerilog sources
-sim/        Verilator C++ wrapper (C ABI)
-tests/      C++ cycle tests
-rust/       Rust harness and Simulator trait
-scripts/    verilate, simulate, clean helpers
-docs/       architecture, protocol, decisions
-traces/     waveform output
-```
-
-## Rust harness
-
-The Rust crate defines a `Simulator` trait; `VerilatorSimulator` is the only
-backend today. Tests check reset behavior, one-cycle latency, arithmetic, and
-protocol violations.
-
-```bash
-cd rust
-cargo test --release
-cargo run --release
+rtl/kv_pkg.sv           parameters and opcodes
+rtl/kv_page_tracker.sv  single-page metadata engine
+rtl/top.sv              simulation top
+rust/src/model.rs       PageTracker reference model
+rust/src/types.rs       shared event/metadata types
+docs/protocol.md        cycle-accurate protocol spec
 ```
 
 ## Documentation
 
+- [docs/protocol.md](docs/protocol.md) — event interface and timing
 - [docs/architecture.md](docs/architecture.md)
-- [docs/protocol.md](docs/protocol.md)
 - [docs/decisions.md](docs/decisions.md)
-- [KV_RTL_MVP_ROADMAP.md](KV_RTL_MVP_ROADMAP.md)
+
+## Checkpoint 0 note
+
+The checkpoint 0 placeholder (`input + 1`) has been replaced by the metadata
+tracker in `rtl/kv_page_tracker.sv`.
