@@ -1,0 +1,21 @@
+[package]
+name = "kv-rtl"
+version = "0.1.0"
+edition = "2021"
+description = "Checkpoint 0 Rust simulation harness for KV-RTL infrastructure"
+
+[lib]
+name = "kv_rtl"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kv-rtl-harness"
+path = "src/main.rs"
+
+[[example]]
+name = "trace_demo"
+path = "examples/trace_demo.rs"
+
+[dependencies]
+
+[build-dependencies]
