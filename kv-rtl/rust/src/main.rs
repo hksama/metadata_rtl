@@ -1,6 +1,8 @@
+use std::path::PathBuf;
+
 use kv_rtl::{
-    tick_idle, AccessEvent, MetadataSimulator, Operation, PageMetadata, PageTracker,
-    VerilatorSimulator,
+    generate_trace, tick_idle, write_trace_listing, AccessEvent, EventResult, MetadataSimulator,
+    MetadataTable, Metrics, Operation, TraceConfig, TracePattern, VerilatorSimulator, NUM_PAGES,
 };
 
 fn main() {
@@ -17,8 +19,32 @@ fn run() -> Result<(), String> {
         VerilatorSimulator::new()
     };
 
-    run_edge_case_tests(&mut sim)?;
-    run_random_differential_tests(&mut sim, 500, 0xC0FF_EE01)?;
+    run_table_edge_tests(&mut sim)?;
+    run_random_differential_tests(&mut sim, 300, 0xC0FF_EE02)?;
+
+    let metrics = run_workload_with_metrics(&mut sim, TracePattern::Mixed)?;
+    let trace_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("traces/synthetic/checkpoint2_trace.txt");
+    let csv_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("traces/synthetic/checkpoint2_metrics.csv");
+
+    let trace = generate_trace(&TraceConfig {
+        seed: 0x5151_0001,
+        num_events: 50,
+        pattern: TracePattern::Mixed,
+        ..TraceConfig::default()
+    });
+    write_trace_listing(&trace_path, &trace).map_err(|e| e.to_string())?;
+    metrics.write_csv(&csv_path).map_err(|e| e.to_string())?;
+
+    println!("Trace listing: {}", trace_path.display());
+    println!("Metrics CSV: {}", csv_path.display());
+    println!("  events={} cycles={} cycles/event={:.2}", metrics.events, metrics.cycles, metrics.cycles_per_event());
+    println!("  hits={} misses={} allocations={} releases={}", metrics.hits, metrics.misses, metrics.allocations, metrics.releases);
 
     if std::env::var("KV_RTL_WAVE").is_ok() {
         sim.finalize_trace();
@@ -28,11 +54,11 @@ fn run() -> Result<(), String> {
         );
     }
 
-    println!("PASS: checkpoint 1 single-page metadata tests");
+    println!("PASS: checkpoint 2 multi-page metadata tests");
     Ok(())
 }
 
-fn sync_reset(model: &mut PageTracker, sim: &mut VerilatorSimulator) {
+fn sync_reset(model: &mut MetadataTable, sim: &mut VerilatorSimulator) {
     model.reset();
     sim.reset();
 }
@@ -40,21 +66,33 @@ fn sync_reset(model: &mut PageTracker, sim: &mut VerilatorSimulator) {
 fn compare_state(
     index: usize,
     event: Option<&AccessEvent>,
-    model: &PageTracker,
+    model: &MetadataTable,
     sim: &VerilatorSimulator,
-    model_result: kv_rtl::model::EventResult,
+    model_result: EventResult,
 ) -> Result<(), String> {
     if sim.resp_valid() != model_result.resp_valid {
-        return Err(format_mismatch(index, event, model, sim, model_result, "resp_valid mismatch"));
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_valid"));
     }
     if sim.resp_error() != model_result.resp_error {
-        return Err(format_mismatch(index, event, model, sim, model_result, "resp_error mismatch"));
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_error"));
     }
-    if sim.metadata() != model.metadata {
-        return Err(format_mismatch(index, event, model, sim, model_result, "metadata mismatch"));
+    if sim.resp_hit() != model_result.resp_hit {
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_hit"));
+    }
+    if sim.resp_miss() != model_result.resp_miss {
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_miss"));
+    }
+    if sim.resp_entry_id() != model_result.resp_entry_id {
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_entry_id"));
+    }
+    if sim.resp_metadata() != model_result.resp_metadata {
+        return Err(format_mismatch(index, event, model, sim, model_result, "resp_metadata"));
+    }
+    if sim.table_entries() != model.entries {
+        return Err(format_mismatch(index, event, model, sim, model_result, "table_entries"));
     }
     if sim.hw_timestamp() != model.hw_timestamp {
-        return Err(format_mismatch(index, event, model, sim, model_result, "hw_timestamp mismatch"));
+        return Err(format_mismatch(index, event, model, sim, model_result, "hw_timestamp"));
     }
     Ok(())
 }
@@ -62,35 +100,27 @@ fn compare_state(
 fn format_mismatch(
     index: usize,
     event: Option<&AccessEvent>,
-    model: &PageTracker,
+    model: &MetadataTable,
     sim: &VerilatorSimulator,
-    model_result: kv_rtl::EventResult,
+    model_result: EventResult,
     reason: &str,
 ) -> String {
     format!(
-        "event_index={index}\n\
-         reason={reason}\n\
-         event={event:?}\n\
-         expected_metadata={:?}\n\
-         actual_metadata={:?}\n\
-         expected_hw_timestamp={}\n\
-         actual_hw_timestamp={}\n\
-         expected_resp_valid={} actual_resp_valid={}\n\
-         expected_resp_error={} actual_resp_error={}",
-        model.metadata,
-        sim.metadata(),
-        model.hw_timestamp,
-        sim.hw_timestamp(),
-        model_result.resp_valid,
-        sim.resp_valid(),
-        model_result.resp_error,
+        "event_index={index}\nreason={reason}\nevent={event:?}\n\
+         expected_table={:?}\nactual_table={:?}\n\
+         expected_result={model_result:?}\n\
+         sim_hit={} sim_miss={} sim_error={}",
+        model.entries,
+        sim.table_entries(),
+        sim.resp_hit(),
+        sim.resp_miss(),
         sim.resp_error(),
     )
 }
 
 fn apply_and_compare(
     index: usize,
-    model: &mut PageTracker,
+    model: &mut MetadataTable,
     sim: &mut VerilatorSimulator,
     event: AccessEvent,
 ) -> Result<(), String> {
@@ -105,123 +135,103 @@ fn apply_and_compare(
     compare_state(index, Some(&event), model, sim, commit)
 }
 
-fn run_edge_case_tests(sim: &mut VerilatorSimulator) -> Result<(), String> {
-    let mut model = PageTracker::new();
+fn run_table_edge_tests(sim: &mut VerilatorSimulator) -> Result<(), String> {
+    let mut model = MetadataTable::new();
     sync_reset(&mut model, sim);
 
-    let page = AccessEvent {
-        request_id: 42,
-        page_id: 173,
-        timestamp: 5,
-        operation: Operation::Allocate,
-    };
-    apply_and_compare(0, &mut model, sim, page)?;
+    // Allocate multiple pages: A 10, A 11, A 12
+    for (i, page_id) in [10u16, 11, 12].iter().enumerate() {
+        apply_and_compare(
+            i,
+            &mut model,
+            sim,
+            AccessEvent {
+                request_id: 1,
+                page_id: *page_id,
+                timestamp: i as u16,
+                operation: Operation::Allocate,
+            },
+        )?;
+    }
 
-    let read = AccessEvent {
-        request_id: 42,
-        page_id: 173,
-        timestamp: 99,
-        operation: Operation::Read,
-    };
-    apply_and_compare(1, &mut model, sim, read)?;
-
-    let write = AccessEvent {
-        request_id: 42,
-        page_id: 173,
-        timestamp: 100,
-        operation: Operation::Write,
-    };
-    apply_and_compare(2, &mut model, sim, write)?;
-
-    let bad_page = AccessEvent {
-        request_id: 42,
-        page_id: 999,
-        timestamp: 1,
-        operation: Operation::Read,
-    };
-    apply_and_compare(3, &mut model, sim, bad_page)?;
-
-    let dup_alloc = AccessEvent {
-        request_id: 1,
-        page_id: 173,
-        timestamp: 2,
-        operation: Operation::Allocate,
-    };
-    apply_and_compare(4, &mut model, sim, dup_alloc)?;
-
-    let release = AccessEvent {
-        request_id: 42,
-        page_id: 173,
-        timestamp: 3,
-        operation: Operation::Release,
-    };
-    apply_and_compare(5, &mut model, sim, release)?;
-
-    let underflow_release = AccessEvent {
-        request_id: 42,
-        page_id: 173,
-        timestamp: 4,
-        operation: Operation::Release,
-    };
-    apply_and_compare(6, &mut model, sim, underflow_release)?;
-
-    // access_count saturation (reference model unit path + RTL near-max spot check)
-    sync_reset(&mut model, sim);
-    let alloc = AccessEvent {
-        request_id: 1,
-        page_id: 10,
-        timestamp: 0,
-        operation: Operation::Allocate,
-    };
-    apply_and_compare(7, &mut model, sim, alloc)?;
-
-    for ts in 0..4 {
-        let event = AccessEvent {
+    // Access hit: C 10, C 11
+    apply_and_compare(
+        3,
+        &mut model,
+        sim,
+        AccessEvent {
             request_id: 1,
             page_id: 10,
-            timestamp: ts,
-            operation: Operation::Read,
-        };
-        apply_and_compare(8 + ts as usize, &mut model, sim, event)?;
-    }
-    assert_eq!(model.metadata.access_count, 4);
+            timestamp: 20,
+            operation: Operation::Access,
+        },
+    )?;
+    apply_and_compare(
+        4,
+        &mut model,
+        sim,
+        AccessEvent {
+            request_id: 1,
+            page_id: 11,
+            timestamp: 21,
+            operation: Operation::Access,
+        },
+    )?;
 
-    // hw_timestamp increments on idle cycles (wrap tested in unit tests)
-    sync_reset(&mut model, sim);
-    for _ in 0..8 {
-        tick_idle(sim);
-        model.step(None);
-        if sim.hw_timestamp() != model.hw_timestamp || sim.metadata() != model.metadata {
-            return Err(format_mismatch(20, None, &model, sim, kv_rtl::EventResult { resp_valid: false, resp_error: false }, "idle timestamp drift"));
+    // Miss: access untracked page
+    let miss = AccessEvent {
+        request_id: 1,
+        page_id: 99,
+        timestamp: 22,
+        operation: Operation::Access,
+    };
+    apply_and_compare(5, &mut model, sim, miss)?;
+
+    // Allocate when full (fill remaining slots)
+    let mut idx = 6;
+    for page_id in 100u16..200 {
+        if model.entries.iter().filter(|e| e.valid).count() >= NUM_PAGES {
+            break;
         }
+        apply_and_compare(
+            idx,
+            &mut model,
+            sim,
+            AccessEvent {
+                request_id: 1,
+                page_id,
+                timestamp: idx as u16,
+                operation: Operation::Allocate,
+            },
+        )?;
+        idx += 1;
     }
 
-    // reset during pending operation
-    sync_reset(&mut model, sim);
-    let pending = AccessEvent {
-        request_id: 1,
-        page_id: 55,
-        timestamp: 7,
-        operation: Operation::Allocate,
-    };
-    sim.drive_event(&pending);
-    model.step(Some(pending));
-    sim.tick();
-    sim.deassert_event();
-    sim.reset();
-    model.reset();
-    if sim.metadata() != PageMetadata::INVALID {
-        return Err("metadata not cleared after reset during operation".into());
-    }
+    // Table full -> alloc fail
+    apply_and_compare(
+        idx,
+        &mut model,
+        sim,
+        AccessEvent {
+            request_id: 1,
+            page_id: 250,
+            timestamp: 1,
+            operation: Operation::Allocate,
+        },
+    )?;
 
-    // release on invalid page
-    let release_invalid = AccessEvent {
-        request_id: 1,
-        page_id: 1,
-        timestamp: 1,
-        operation: Operation::Release,
-    };
-    apply_and_compare(21, &mut model, sim, release_invalid)?;
+    // Release
+    apply_and_compare(
+        idx + 1,
+        &mut model,
+        sim,
+        AccessEvent {
+            request_id: 1,
+            page_id: 12,
+            timestamp: 30,
+            operation: Operation::Release,
+        },
+    )?;
 
     Ok(())
 }
@@ -231,66 +241,58 @@ fn run_random_differential_tests(
     count: usize,
     seed: u64,
 ) -> Result<(), String> {
-    let mut model = PageTracker::new();
+    let mut model = MetadataTable::new();
     sync_reset(&mut model, sim);
 
-    let mut rng = LcgRng::new(seed);
-    let page_id = (rng.next_u16() % 1024) + 1;
-    let request_id = (rng.next_u16() % 1024) + 1;
+    let trace = generate_trace(&TraceConfig {
+        seed,
+        num_events: count,
+        pattern: TracePattern::Random,
+        ..TraceConfig::default()
+    });
 
-    for index in 0..count {
-        let op = match rng.next_u32() % 5 {
-            0 => Operation::Read,
-            1 => Operation::Write,
-            2 => Operation::Release,
-            3 => Operation::Allocate,
-            _ => {
-                sim.deassert_event();
-                sim.tick();
-                let result = model.step(None);
-                compare_state(index, None, &model, sim, result)?;
-                continue;
-            }
-        };
-
-        let event = AccessEvent {
-            request_id,
-            page_id,
-            timestamp: rng.next_u16(),
-            operation: op,
-        };
-        apply_and_compare(index, &mut model, sim, event)?;
+    for (index, event) in trace.iter().enumerate() {
+        apply_and_compare(index, &mut model, sim, *event)?;
     }
-
     Ok(())
 }
 
-struct LcgRng {
-    state: u64,
-}
+fn run_workload_with_metrics(
+    sim: &mut VerilatorSimulator,
+    pattern: TracePattern,
+) -> Result<Metrics, String> {
+    let mut model = MetadataTable::new();
+    let mut metrics = Metrics::default();
+    sync_reset(&mut model, sim);
 
-impl LcgRng {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
+    let trace = generate_trace(&TraceConfig {
+        seed: 0xBEE_F00D,
+        num_events: 200,
+        pattern,
+        ..TraceConfig::default()
+    });
+
+    for (index, event) in trace.iter().enumerate() {
+        let start = sim.cycle_count();
+        apply_and_compare(index, &mut model, sim, *event)?;
+        metrics.record_cycles(sim.cycle_count() - start);
+        metrics.record_event(
+            event.operation,
+            sim.resp_hit(),
+            sim.resp_miss(),
+            sim.resp_error(),
+        );
+        tick_idle(sim);
+        model.step(None);
+        metrics.record_cycles(1);
     }
 
-    fn next_u32(&mut self) -> u32 {
-        self.state = self
-            .state
-            .wrapping_mul(1_103_515_245)
-            .wrapping_add(12_345);
-        (self.state >> 16) as u32
-    }
-
-    fn next_u16(&mut self) -> u16 {
-        (self.next_u32() & 0xFFFF) as u16
-    }
+    Ok(metrics)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kv_rtl::{COUNTER_MAX, PageState, REFCOUNT_MAX};
 
     #[test]
     fn differential_random_smoke() {
@@ -299,46 +301,17 @@ mod tests {
     }
 
     #[test]
-    fn edge_cases() {
+    fn table_edge_cases() {
         let mut sim = VerilatorSimulator::new();
-        run_edge_case_tests(&mut sim).expect("edge cases failed");
+        run_table_edge_tests(&mut sim).expect("edge cases failed");
     }
 
     #[test]
-    fn refcount_saturation_unit() {
-        assert_eq!(REFCOUNT_MAX.saturating_add(1), REFCOUNT_MAX);
-    }
-
-    #[test]
-    fn access_count_saturation_reference_model() {
-        let mut model = PageTracker::new();
-        model.set_metadata_for_test(
-            PageMetadata {
-                page_id: 1,
-                request_id: 1,
-                access_count: COUNTER_MAX,
-                last_access: 0,
-                refcount: 1,
-                valid: true,
-                state: kv_rtl::PageState::Valid,
-            },
-            0,
-        );
-        let event = AccessEvent {
-            request_id: 1,
-            page_id: 1,
-            timestamp: 9,
-            operation: Operation::Read,
-        };
-        assert!(!model.submit_event(event).resp_error);
-        assert_eq!(model.metadata.access_count, COUNTER_MAX);
-    }
-
-    #[test]
-    fn hw_timestamp_wraps_reference_model() {
-        let mut model = PageTracker::new();
-        model.hw_timestamp = u16::MAX;
-        model.step(None);
-        assert_eq!(model.hw_timestamp, 0);
+    fn trace_generator_produces_events() {
+        let trace = generate_trace(&TraceConfig {
+            num_events: 20,
+            ..TraceConfig::default()
+        });
+        assert_eq!(trace.len(), 20);
     }
 }

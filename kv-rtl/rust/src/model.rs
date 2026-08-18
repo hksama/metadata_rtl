@@ -1,11 +1,12 @@
 use crate::types::{
     sat_dec_u8, sat_inc_u16, sat_inc_u8, AccessEvent, Operation, PageMetadata, PageState,
+    NUM_PAGES,
 };
 
-/// Golden software reference for single-page metadata updates.
+/// Golden software reference for multi-page metadata table updates.
 #[derive(Debug, Clone)]
-pub struct PageTracker {
-    pub metadata: PageMetadata,
+pub struct MetadataTable {
+    pub entries: Vec<PageMetadata>,
     pub hw_timestamp: u16,
     pending_event: Option<AccessEvent>,
 }
@@ -14,12 +15,27 @@ pub struct PageTracker {
 pub struct EventResult {
     pub resp_valid: bool,
     pub resp_error: bool,
+    pub resp_hit: bool,
+    pub resp_miss: bool,
+    pub resp_entry_id: Option<u8>,
+    pub resp_metadata: PageMetadata,
 }
 
-impl PageTracker {
+impl EventResult {
+    pub const IDLE: Self = Self {
+        resp_valid: false,
+        resp_error: false,
+        resp_hit: false,
+        resp_miss: false,
+        resp_entry_id: None,
+        resp_metadata: PageMetadata::INVALID,
+    };
+}
+
+impl MetadataTable {
     pub fn new() -> Self {
         Self {
-            metadata: PageMetadata::INVALID,
+            entries: vec![PageMetadata::INVALID; NUM_PAGES],
             hw_timestamp: 0,
             pending_event: None,
         }
@@ -29,47 +45,59 @@ impl PageTracker {
         *self = Self::new();
     }
 
-    /// Advance one clock cycle, optionally presenting a new event for latching.
+    pub fn lookup_page(&self, page_id: u16) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.valid && e.page_id == page_id)
+    }
+
+    pub fn find_free_entry(&self) -> Option<usize> {
+        self.entries.iter().position(|e| !e.valid)
+    }
+
     pub fn step(&mut self, event: Option<AccessEvent>) -> EventResult {
         self.hw_timestamp = self.hw_timestamp.wrapping_add(1);
 
         if let Some(pending) = self.pending_event.take() {
-            let error = self.apply_committed_event(pending);
-            return EventResult {
-                resp_valid: true,
-                resp_error: error,
-            };
+            return self.apply_committed_event(pending);
         }
 
         if let Some(ev) = event {
             self.pending_event = Some(ev);
         }
 
-        EventResult {
-            resp_valid: false,
-            resp_error: false,
-        }
+        EventResult::IDLE
     }
 
-    /// Two-cycle handshake matching RTL: latch then commit.
     pub fn submit_event(&mut self, event: AccessEvent) -> EventResult {
         let _ = self.step(Some(event));
         self.step(None)
     }
 
-    fn apply_committed_event(&mut self, event: AccessEvent) -> bool {
+    fn apply_committed_event(&mut self, event: AccessEvent) -> EventResult {
         match event.operation {
             Operation::Allocate => self.apply_allocate(event),
-            Operation::Read | Operation::Write => self.apply_access(event),
+            Operation::Read | Operation::Write | Operation::Access => self.apply_access(event),
             Operation::Release => self.apply_release(event),
         }
     }
 
-    fn apply_allocate(&mut self, event: AccessEvent) -> bool {
-        if self.metadata.valid {
-            return true;
+    fn apply_allocate(&mut self, event: AccessEvent) -> EventResult {
+        if self.lookup_page(event.page_id).is_some() {
+            return EventResult {
+                resp_valid: true,
+                resp_error: true,
+                ..EventResult::IDLE
+            };
         }
-        self.metadata = PageMetadata {
+        let Some(idx) = self.find_free_entry() else {
+            return EventResult {
+                resp_valid: true,
+                resp_error: true,
+                ..EventResult::IDLE
+            };
+        };
+        let meta = PageMetadata {
             page_id: event.page_id,
             request_id: event.request_id,
             access_count: 0,
@@ -78,73 +106,100 @@ impl PageTracker {
             valid: true,
             state: PageState::Valid,
         };
-        false
-    }
-
-    fn apply_access(&mut self, event: AccessEvent) -> bool {
-        if !self.page_matches(event.page_id) {
-            return true;
+        self.entries[idx] = meta;
+        EventResult {
+            resp_valid: true,
+            resp_error: false,
+            resp_hit: false,
+            resp_miss: false,
+            resp_entry_id: Some(idx as u8),
+            resp_metadata: meta,
         }
-        self.metadata.access_count = sat_inc_u16(self.metadata.access_count);
-        self.metadata.last_access = event.timestamp;
-        false
     }
 
-    fn apply_release(&mut self, event: AccessEvent) -> bool {
-        if !self.page_matches(event.page_id) {
-            return true;
+    fn apply_access(&mut self, event: AccessEvent) -> EventResult {
+        let Some(idx) = self.lookup_page(event.page_id) else {
+            return EventResult {
+                resp_valid: true,
+                resp_error: false,
+                resp_hit: false,
+                resp_miss: true,
+                resp_entry_id: None,
+                resp_metadata: PageMetadata::INVALID,
+            };
+        };
+        let entry = &mut self.entries[idx];
+        entry.access_count = sat_inc_u16(entry.access_count);
+        entry.last_access = event.timestamp;
+        EventResult {
+            resp_valid: true,
+            resp_error: false,
+            resp_hit: true,
+            resp_miss: false,
+            resp_entry_id: Some(idx as u8),
+            resp_metadata: *entry,
         }
-        if self.metadata.refcount == 0 {
-            return true;
+    }
+
+    fn apply_release(&mut self, event: AccessEvent) -> EventResult {
+        let Some(idx) = self.lookup_page(event.page_id) else {
+            return EventResult {
+                resp_valid: true,
+                resp_error: true,
+                ..EventResult::IDLE
+            };
+        };
+        if self.entries[idx].refcount == 0 {
+            return EventResult {
+                resp_valid: true,
+                resp_error: true,
+                ..EventResult::IDLE
+            };
         }
-        self.metadata.refcount = sat_dec_u8(self.metadata.refcount);
-        false
-    }
-
-    fn page_matches(&self, page_id: u16) -> bool {
-        self.metadata.valid && self.metadata.page_id == page_id
-    }
-
-    #[cfg_attr(test, allow(dead_code))]
-    pub fn set_metadata_for_test(&mut self, metadata: PageMetadata, hw_timestamp: u16) {
-        self.metadata = metadata;
-        self.hw_timestamp = hw_timestamp;
-        self.pending_event = None;
+        let entry = &mut self.entries[idx];
+        entry.refcount = sat_dec_u8(entry.refcount);
+        EventResult {
+            resp_valid: true,
+            resp_error: false,
+            resp_hit: true,
+            resp_miss: false,
+            resp_entry_id: Some(idx as u8),
+            resp_metadata: *entry,
+        }
     }
 }
 
-impl Default for PageTracker {
+impl Default for MetadataTable {
     fn default() -> Self {
         Self::new()
     }
 }
+
+// Backward-compatible alias used by earlier checkpoints.
+pub type PageTracker = MetadataTable;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn allocate_read_release_flow() {
-        let mut model = PageTracker::new();
-        model.step(None);
-        model.step(None);
-
-        let alloc = AccessEvent {
+    fn multi_page_allocate_and_access() {
+        let mut table = MetadataTable::new();
+        assert!(!table.submit_event(AccessEvent {
             request_id: 1,
-            page_id: 7,
-            timestamp: 10,
+            page_id: 10,
+            timestamp: 0,
             operation: Operation::Allocate,
-        };
-        assert!(!model.submit_event(alloc).resp_error);
+        })
+        .resp_error);
 
-        let read = AccessEvent {
+        let hit = table.submit_event(AccessEvent {
             request_id: 1,
-            page_id: 7,
-            timestamp: 42,
-            operation: Operation::Read,
-        };
-        assert!(!model.submit_event(read).resp_error);
-        assert_eq!(model.metadata.access_count, 1);
-        assert_eq!(model.metadata.last_access, 42);
+            page_id: 10,
+            timestamp: 5,
+            operation: Operation::Access,
+        });
+        assert!(hit.resp_hit);
+        assert_eq!(hit.resp_metadata.access_count, 1);
     }
 }

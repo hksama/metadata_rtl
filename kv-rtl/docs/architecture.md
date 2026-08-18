@@ -1,9 +1,9 @@
-# Checkpoint 1 — Architecture
+# Checkpoint 2 — Architecture
 
 ## Components
 
 ```text
-Rust harness + PageTracker reference model
+Rust harness + MetadataTable + trace_gen + metrics
         │
         ▼
 MetadataSimulator trait
@@ -12,34 +12,31 @@ MetadataSimulator trait
 C ABI (sim/simulator.h)
         │
         ▼
-Verilator (top → kv_page_tracker)
+Verilator (top → kv_metadata_engine)
         │
         ▼
-rtl/kv_pkg.sv + rtl/kv_page_tracker.sv
+rtl/kv_metadata_engine.sv  (NUM_PAGES-entry table)
 ```
 
 ## RTL modules
 
 | Module | Role |
 |--------|------|
-| `kv_pkg` | Width parameters, opcodes, saturation helpers |
-| `kv_page_tracker` | Single-page metadata storage and event processing |
-| `top` | Thin wrapper exposing the tracker as the simulation top |
+| `kv_pkg` | Widths, opcodes, saturation helpers, `DEFAULT_NUM_PAGES` |
+| `kv_metadata_engine` | Parallel-lookup metadata table |
+| `top` | Parameterized wrapper (`NUM_PAGES` overridable at Verilate time) |
 
-## Data tracked per page
+## Lookup
 
-- `page_id`, `request_id`
-- `access_count` (saturating)
-- `last_access` (from event timestamp on READ/WRITE)
-- `refcount` (saturating increment on ALLOCATE, decrement on RELEASE)
-- `valid` / `state`
+On commit, all `NUM_PAGES` entries are compared to `page_id` in parallel.
+First match wins. Free-slot search scans for `!valid` (lowest index first).
 
-Policy (LRU, frequency, etc.) is **not** implemented here — only metadata
-storage and explicit updates from access events (Principle 2).
+## Rust modules
 
-## Timing model
+| Module | Role |
+|--------|------|
+| `model.rs` | `MetadataTable` golden reference |
+| `trace_gen.rs` | Synthetic workloads (hot/warm/cold, sequential, random, bursty) |
+| `metrics.rs` | Cycle/hit/miss counters + CSV export |
 
-Two-cycle event pipeline: latch on cycle *N*, commit on cycle *N+1*.
-`hw_timestamp` increments every committed cycle.
-
-See [protocol.md](protocol.md) for signal-level detail.
+See [protocol.md](protocol.md) for timing and response semantics.

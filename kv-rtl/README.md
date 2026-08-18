@@ -1,14 +1,7 @@
-# KV-RTL — Checkpoint 1
+# KV-RTL — Checkpoint 2
 
-Hardware-assisted KV-cache **single-page metadata tracker**: SystemVerilog,
-Verilator, Rust reference model, and differential tests.
-
-## Prerequisites
-
-- Verilator 5.x
-- Rust (`cargo`)
-- `g++`, `make`
-- GTKWave (optional)
+Multi-page KV metadata table with parallel lookup, hit/miss reporting,
+synthetic workload generation, and metrics CSV output.
 
 ## Quick start
 
@@ -17,37 +10,45 @@ cd kv-rtl
 make test
 ```
 
-`make test` builds RTL, runs C++ smoke tests, Rust differential tests (edge
-cases + 500 random events), and exits non-zero on mismatch.
+## Configure table size
+
+```bash
+NUM_PAGES=64 make verilate
+make test
+```
+
+Rust default is `NUM_PAGES=16` in `rust/src/types.rs` — must match Verilator build.
+
+## Outputs
+
+| Artifact | Description |
+|----------|-------------|
+| `traces/synthetic/checkpoint2_trace.txt` | Sample workload (`A` alloc, `C` access, `R` release) |
+| `traces/synthetic/checkpoint2_metrics.csv` | events, cycles, hits, misses, … |
+| `traces/synthetic/checkpoint2.vcd` | Waveform from `make simulate` |
 
 ## Waveforms
 
 ```bash
 make simulate
-gtkwave traces/synthetic/checkpoint1.vcd
+gtkwave traces/synthetic/checkpoint2.vcd
 ```
 
-Signals: `event_valid`, `operation`, `page_id`, `request_id`, `event_timestamp`,
-`resp_valid`, `resp_error`, `meta_*`, `hw_timestamp`.
+Key signals: `event_valid`, `operation`, `page_id`, `resp_hit`, `resp_miss`,
+`resp_entry_id`, `resp_meta_*`, `hw_timestamp`.
 
 ## Layout
 
 ```text
-rtl/kv_pkg.sv           parameters and opcodes
-rtl/kv_page_tracker.sv  single-page metadata engine
-rtl/top.sv              simulation top
-rust/src/model.rs       PageTracker reference model
-rust/src/types.rs       shared event/metadata types
-docs/protocol.md        cycle-accurate protocol spec
+rtl/kv_metadata_engine.sv   NUM_PAGES-entry table + lookup
+rust/src/trace_gen.rs       workload generator
+rust/src/metrics.rs         CSV metrics
+rust/src/model.rs           MetadataTable reference model
+docs/protocol.md            pipeline + hit/miss semantics
 ```
 
 ## Documentation
 
-- [docs/protocol.md](docs/protocol.md) — event interface and timing
+- [docs/protocol.md](docs/protocol.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/decisions.md](docs/decisions.md)
-
-## Checkpoint 0 note
-
-The checkpoint 0 placeholder (`input + 1`) has been replaced by the metadata
-tracker in `rtl/kv_page_tracker.sv`.

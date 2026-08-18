@@ -8,6 +8,7 @@ pub struct Widths {
     pub refcount: u32,
 }
 
+pub const NUM_PAGES: usize = 16;
 pub const WIDTHS: Widths = Widths {
     page_id: 16,
     request_id: 16,
@@ -27,6 +28,7 @@ pub enum Operation {
     Write = 1,
     Release = 2,
     Allocate = 3,
+    Access = 4,
 }
 
 impl Operation {
@@ -36,8 +38,13 @@ impl Operation {
             1 => Some(Self::Write),
             2 => Some(Self::Release),
             3 => Some(Self::Allocate),
+            4 => Some(Self::Access),
             _ => None,
         }
+    }
+
+    pub fn is_access(self) -> bool {
+        matches!(self, Self::Read | Self::Write | Self::Access)
     }
 }
 

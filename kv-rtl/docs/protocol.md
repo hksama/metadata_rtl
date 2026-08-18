@@ -1,120 +1,103 @@
-# Checkpoint 1 — Single-page metadata protocol
+# Checkpoint 2 — Multi-page metadata protocol
 
 ## Scope
 
-One KV page is tracked. The engine accepts **access events** and updates
-metadata with a fixed **two-cycle** pipeline (accept, then commit).
+`NUM_PAGES` metadata slots (default **16**, compile-time via `-GNUM_PAGES=`).
+Each slot stores: `page_id`, `request_id`, `access_count`, `last_access`,
+`refcount`, `valid`, `state`.
 
-Configurable widths are defined in `rtl/kv_pkg.sv`:
+Lookup is **parallel compare** across all entries (correctness-first, not optimized).
 
-| Parameter | Default |
-|-----------|---------|
-| `PAGE_ID_WIDTH` | 16 |
-| `REQUEST_ID_WIDTH` | 16 |
-| `COUNTER_WIDTH` | 16 |
-| `TIMESTAMP_WIDTH` | 16 |
-| `REFCOUNT_WIDTH` | 8 |
-| `OP_WIDTH` | 3 |
+## Event interface
 
-## Event interface (`ACCESS_EVENT`)
-
-| Signal | Width | Description |
-|--------|-------|-------------|
-| `event_valid` | 1 | Qualifies the event for the current cycle |
-| `request_id` | `REQUEST_ID_WIDTH` | Owning request |
-| `page_id` | `PAGE_ID_WIDTH` | Target page |
-| `event_timestamp` | `TIMESTAMP_WIDTH` | Software-supplied timestamp for access recording |
-| `operation` | `OP_WIDTH` | Event opcode (see below) |
-
-### Operations
+Same as checkpoint 1, plus `OP_ACCESS` (opcode 4) as a unified access operation.
+`READ`, `WRITE`, and `ACCESS` all perform the same metadata update.
 
 | Opcode | Name | Behavior |
 |--------|------|----------|
-| `0` | `READ` | `access_count += 1` (saturate), `last_access = event_timestamp` |
-| `1` | `WRITE` | Same metadata effect as `READ` in checkpoint 1 |
-| `2` | `RELEASE` | `refcount -= 1` (saturate at 0); error if already 0 |
-| `3` | `ALLOCATE` | `valid=1`, store ids, `refcount=1`, counters cleared |
-
-Reserved opcodes are rejected with `resp_error=1`.
-
-## Metadata outputs
-
-| Signal | Description |
-|--------|-------------|
-| `meta_valid` | Page is allocated |
-| `meta_page_id` | Stored page id |
-| `meta_request_id` | Stored request id |
-| `meta_access_count` | Saturating access counter |
-| `meta_last_access` | Last recorded `event_timestamp` from READ/WRITE |
-| `meta_refcount` | Saturating reference count |
-| `meta_state` | `0=INVALID`, `1=VALID` |
+| 0 | READ | Access (hit/miss) |
+| 1 | WRITE | Access (hit/miss) |
+| 2 | RELEASE | Decrement `refcount` on tracked page |
+| 3 | ALLOCATE | Claim a free slot for `page_id` |
+| 4 | ACCESS | Access (hit/miss) |
 
 ## Response interface
 
 | Signal | Description |
 |--------|-------------|
-| `resp_valid` | High for one cycle when an event completes |
-| `resp_error` | High if the event was rejected |
+| `resp_valid` | Event completed (one-cycle pulse) |
+| `resp_error` | Protocol/allocation error |
+| `resp_hit` | Page found and updated |
+| `resp_miss` | Access to untracked `page_id` (not an error) |
+| `resp_entry_id` | Table index of affected entry |
+| `resp_meta_*` | Metadata of affected entry after commit |
 
-Rejected events do **not** modify metadata.
+### HIT vs MISS vs ERROR
 
-## Cycle-level timing
+| Outcome | `resp_hit` | `resp_miss` | `resp_error` | Table change |
+|---------|------------|-------------|--------------|--------------|
+| Access hit | 1 | 0 | 0 | Yes |
+| Access miss | 0 | 1 | 0 | No |
+| Alloc success | 0 | 0 | 0 | Yes |
+| Alloc fail (full/duplicate) | 0 | 0 | 1 | No |
+| Release success | 1 | 0 | 0 | Yes |
+| Release fail | 0 | 0 | 1 | No |
 
-The tracker accepts at most **one event every two cycles**.
+A **miss is not an eviction** — the engine only reports “page not tracked.”
 
-### Cycle N — accept (latch)
-
-- `event_valid = 1` with stable `request_id`, `page_id`, `event_timestamp`, `operation`
-- `hw_timestamp` increments on the posedge
-- Event is latched internally; `resp_valid = 0`
-
-### Cycle N+1 — commit
-
-- `event_valid = 0` (recommended)
-- `hw_timestamp` increments on the posedge
-- Latched event is applied
-- `resp_valid = 1` for this cycle
-- `resp_error` indicates success (`0`) or rejection (`1`)
-
-### Example
+## Pipeline (critical path)
 
 ```text
-Cycle 10: event_valid=1, page_id=7, operation=READ
-Cycle 11: metadata update committed, resp_valid=1
+event_valid (input)
+      ↓  cycle N — latch
+parallel page_id lookup (combinational, all entries)
+      ↓  cycle N+1 — commit
+metadata read + update
+      ↓
+resp_valid / resp_hit / resp_miss / resp_meta_* (output)
 ```
 
-## Hardware timestamp (`hw_timestamp`)
+### Latency and throughput (functional cycles)
 
-- Increments by 1 every posedge while `rst=0`
-- Holds at 0 while `rst=1`
-- Wraps modulo `2^TIMESTAMP_WIDTH` (`65535 → 0` with default widths)
-- Independent from `event_timestamp` (software supplied)
+| Metric | Value |
+|--------|-------|
+| Event accept → response | **2 cycles** |
+| Throughput | **1 event / 2 cycles** (back-to-back with `event_valid` every other cycle) |
+| Idle `hw_timestamp` | +1 per cycle |
 
-## Saturation and error rules
+Interface accepts **one event per commit**. Multi-event per cycle is reserved for
+future extension via a wider event bus.
 
-| Condition | Result |
-|-----------|--------|
-| `access_count == MAX` and READ/WRITE | Stay at `MAX` |
-| `refcount == MAX` and ALLOCATE | N/A (duplicate alloc rejected first) |
-| `refcount == 0` and RELEASE | `resp_error=1`, no change |
-| `refcount > 0` and RELEASE | `refcount -= 1` (saturate at 0) |
-| READ/WRITE/RELEASE when `meta_valid=0` | `resp_error=1` |
-| READ/WRITE/RELEASE with mismatched `page_id` | `resp_error=1` |
-| ALLOCATE when `meta_valid=1` | `resp_error=1` (duplicate allocation) |
-| Unknown opcode | `resp_error=1` |
+## Table read port (simulation)
 
-## Reset
+| Signal | Description |
+|--------|-------------|
+| `table_read` | Qualify indexed read |
+| `table_idx` | Entry index `[0, NUM_PAGES)` |
+| `table_*` | Combinational read of slot metadata |
 
-Synchronous active-high `rst`:
+## ALLOCATE rules
 
-- Clears metadata to invalid/zeroed state
-- Clears pending latched events
-- Clears `resp_valid` / `resp_error`
-- Clears `hw_timestamp`
-- Events presented during reset are ignored
+1. Reject if `page_id` already tracked (`resp_error`).
+2. Find lowest-index free slot.
+3. Reject if table full (`resp_error`).
+4. On success: initialize entry, `refcount=1`, return `resp_entry_id`.
 
-## Differential testing
+## RELEASE rules
 
-The Rust `PageTracker` reference model mirrors this protocol. Tests feed
-identical event streams to Rust and Verilator and compare metadata,
-`hw_timestamp`, and response flags after every event.
+1. Reject if page not tracked or `refcount==0`.
+2. On success: `refcount -= 1` (saturate at 0).
+
+## Saturation
+
+`access_count` and `refcount` use saturating increment/decrement (unchanged from CP1).
+
+## Rust reference model
+
+`MetadataTable` mirrors this protocol. Differential tests compare full table state,
+response flags, and `resp_metadata` after every event.
+
+## Workload artifacts
+
+- `traces/synthetic/checkpoint2_trace.txt` — human-readable event listing (`A`/`C`/`R`)
+- `traces/synthetic/checkpoint2_metrics.csv` — events, cycles, hits, misses, etc.

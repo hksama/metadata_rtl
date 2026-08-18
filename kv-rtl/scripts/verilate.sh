@@ -6,9 +6,10 @@ BUILD_DIR="${ROOT}/build"
 VERILATOR_DIR="${BUILD_DIR}/verilator"
 RTL_FILES=(
     "${ROOT}/rtl/kv_pkg.sv"
-    "${ROOT}/rtl/kv_page_tracker.sv"
+    "${ROOT}/rtl/kv_metadata_engine.sv"
     "${ROOT}/rtl/top.sv"
 )
+NUM_PAGES="${NUM_PAGES:-16}"
 VERILATOR_INCLUDE="${VERILATOR_INCLUDE:-/usr/share/verilator/include}"
 
 mkdir -p "${BUILD_DIR}"
@@ -23,6 +24,7 @@ verilator \
     -Wall -Wno-DECLFILENAME -Wno-IMPORTSTAR \
     --cc \
     -Mdir "${VERILATOR_DIR}" \
+    -GNUM_PAGES="${NUM_PAGES}" \
     --top-module top \
     --trace \
     "${RTL_FILES[@]}"

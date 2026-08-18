@@ -1,36 +1,40 @@
-# Design decisions — Checkpoint 1
+# Design decisions — Checkpoint 2
 
-## D1.1 — Single page only
+## D2.1 — Parallel compare lookup
 
-Checkpoint 1 tracks one page. `page_id` in events is checked against the
-stored id; mismatches are rejected. Multi-page tables come in checkpoint 2.
+First multi-page implementation uses O(`NUM_PAGES`) parallel comparison.
+Indexed/direct-mapped lookup is deferred until correctness is proven.
 
-## D1.2 — Two-cycle event pipeline
+## D2.2 — Lowest-index free slot
 
-Events are latched on cycle *N* and committed on *N+1* so timing is explicit
-and testable, consistent with checkpoint 0 infrastructure patterns.
+ALLOCATE picks the first invalid entry. Deterministic for differential testing.
 
-## D1.3 — WRITE mirrors READ for metadata
+## D2.3 — Miss is not error
 
-`WRITE` increments `access_count` and updates `last_access`, same as `READ`.
-Future checkpoints may differentiate write-side policy without changing the
-event opcode layout.
+Access to an untracked page sets `resp_miss=1` without `resp_error`. No eviction
+or allocation is implied.
 
-## D1.4 — Saturating arithmetic
+## D2.4 — ACCESS opcode
 
-`access_count` and `refcount` use saturating increment/decrement. Overflow and
-underflow never wrap silently.
+`OP_ACCESS` aliases READ/WRITE behavior. Keeps checkpoint 1 opcodes while
+matching checkpoint 2 terminology.
 
-## D1.5 — Rust `PageTracker` is golden
+## D2.5 — One event per commit
 
-All differential tests compare Verilator output against `PageTracker`. Mismatches
-print event index, event, expected metadata, and actual metadata.
+Single-event interface preserved from checkpoint 1. Future multi-event bus can
+widen `event_valid` to a vector without changing table storage.
 
-## D1.6 — `hw_timestamp` wraps
+## D2.6 — Configurable NUM_PAGES
 
-The free-running hardware timestamp wraps at `2^TIMESTAMP_WIDTH`. Tests verify
-wrap in the reference model; RTL and Rust stay cycle-aligned on idle ticks.
+Default 16 for simulation speed. Override at build:
 
-## D1.7 — Rejected events do not mutate metadata
+```bash
+NUM_PAGES=64 make verilate
+```
 
-`resp_error=1` means the latched event had no effect on stored metadata.
+Rust `NUM_PAGES` constant must match the Verilated build.
+
+## D2.7 — Metrics CSV for plotting
+
+`checkpoint2_metrics.csv` records events, cycles, hits, misses, allocations,
+releases for downstream analysis.

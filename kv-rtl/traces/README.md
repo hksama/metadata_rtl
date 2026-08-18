@@ -1,40 +1,23 @@
 # Traces
 
-Synthetic and recorded access traces for KV-cache metadata evaluation will live here.
+Synthetic and recorded access traces for KV-cache metadata evaluation.
 
-## Checkpoint 1
+## Checkpoint 2
 
-Waveforms from the single-page metadata tracker:
+| File | Description |
+|------|-------------|
+| `checkpoint2.vcd` / `.fst` | Waveform from `make simulate` |
+| `checkpoint2_trace.txt` | Human-readable workload (`A` alloc, `C` access, `R` release) |
+| `checkpoint2_metrics.csv` | events, cycles, hits, misses, allocations, releases |
 
-- `checkpoint1.vcd` — default from `make simulate`
-- `checkpoint1.fst` — when `WAVE_FMT=fst make simulate`
-
-Key signals under `top`: `event_valid`, `operation`, `page_id`, `request_id`,
-`event_timestamp`, `resp_valid`, `resp_error`, `meta_valid`, `meta_access_count`,
-`meta_refcount`, `hw_timestamp`.
-
-## Checkpoint 0 (historical)
-
-Earlier infrastructure smoke tests used `checkpoint0.vcd`.
+Key GTKWave signals under `top`: `event_valid`, `operation`, `page_id`, `resp_hit`,
+`resp_miss`, `resp_entry_id`, `resp_meta_access_count`, `hw_timestamp`.
 
 ## Viewing waveforms
 
 ```bash
-gtkwave traces/synthetic/checkpoint0.vcd
-```
-
-In gtkwave, expand the `top` scope and add the signals above to the waveform viewer.
-
-For FST:
-
-```bash
-gtkwave traces/synthetic/checkpoint0.fst
-```
-
-Generate a fresh waveform:
-
-```bash
 make simulate
-# or
-WAVE_FMT=fst make simulate
+gtkwave traces/synthetic/checkpoint2.vcd
 ```
+
+FST: `WAVE_FMT=fst make simulate`

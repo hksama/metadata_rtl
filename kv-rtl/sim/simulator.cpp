@@ -37,6 +37,8 @@ static void clear_event_inputs(SimHandle* sim) {
 static void apply_reset(SimHandle* sim, int cycles) {
     sim->top->rst = 1;
     clear_event_inputs(sim);
+    sim->top->table_read = 0;
+    sim->top->table_idx = 0;
     for (int i = 0; i < cycles; ++i) {
         sim->top->clk = 0;
         sim->top->eval();
@@ -84,6 +86,25 @@ static SimHandle* sim_create_impl(const char* trace_path) {
     Verilated::randReset(0);
     apply_reset(sim, 2);
     return sim;
+}
+
+static void read_metadata_fields(
+    uint8_t valid,
+    uint16_t page_id,
+    uint16_t request_id,
+    uint16_t access_count,
+    uint16_t last_access,
+    uint8_t refcount,
+    uint8_t state,
+    KvMetadata* out
+) {
+    out->valid = valid;
+    out->page_id = page_id;
+    out->request_id = request_id;
+    out->access_count = access_count;
+    out->last_access = last_access;
+    out->refcount = refcount;
+    out->state = state;
 }
 
 extern "C" {
@@ -155,14 +176,51 @@ int sim_resp_error(const SimHandle* sim) {
     return sim->top->resp_error ? 1 : 0;
 }
 
-void sim_read_metadata(const SimHandle* sim, KvMetadata* out) {
-    out->valid = sim->top->meta_valid ? 1 : 0;
-    out->page_id = static_cast<uint16_t>(sim->top->meta_page_id);
-    out->request_id = static_cast<uint16_t>(sim->top->meta_request_id);
-    out->access_count = static_cast<uint16_t>(sim->top->meta_access_count);
-    out->last_access = static_cast<uint16_t>(sim->top->meta_last_access);
-    out->refcount = static_cast<uint8_t>(sim->top->meta_refcount);
-    out->state = static_cast<uint8_t>(sim->top->meta_state);
+int sim_resp_hit(const SimHandle* sim) {
+    return sim->top->resp_hit ? 1 : 0;
+}
+
+int sim_resp_miss(const SimHandle* sim) {
+    return sim->top->resp_miss ? 1 : 0;
+}
+
+uint32_t sim_resp_entry_id(const SimHandle* sim) {
+    return static_cast<uint32_t>(sim->top->resp_entry_id);
+}
+
+void sim_read_resp_metadata(const SimHandle* sim, KvMetadata* out) {
+    read_metadata_fields(
+        sim->top->resp_meta_valid ? 1 : 0,
+        static_cast<uint16_t>(sim->top->resp_meta_page_id),
+        static_cast<uint16_t>(sim->top->resp_meta_request_id),
+        static_cast<uint16_t>(sim->top->resp_meta_access_count),
+        static_cast<uint16_t>(sim->top->resp_meta_last_access),
+        static_cast<uint8_t>(sim->top->resp_meta_refcount),
+        static_cast<uint8_t>(sim->top->resp_meta_state),
+        out
+    );
+}
+
+int sim_num_pages(void) {
+    return KV_NUM_PAGES;
+}
+
+void sim_read_table_entry(SimHandle* sim, uint32_t index, KvMetadata* out) {
+    sim->top->table_read = 1;
+    sim->top->table_idx = index;
+    sim->top->eval();
+    read_metadata_fields(
+        sim->top->table_valid ? 1 : 0,
+        static_cast<uint16_t>(sim->top->table_page_id),
+        static_cast<uint16_t>(sim->top->table_request_id),
+        static_cast<uint16_t>(sim->top->table_access_count),
+        static_cast<uint16_t>(sim->top->table_last_access),
+        static_cast<uint8_t>(sim->top->table_refcount),
+        static_cast<uint8_t>(sim->top->table_state),
+        out
+    );
+    sim->top->table_read = 0;
+    sim->top->eval();
 }
 
 uint32_t sim_hw_timestamp(const SimHandle* sim) {

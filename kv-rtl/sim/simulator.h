@@ -1,4 +1,4 @@
-// C ABI for the Verilator-backed KV page metadata simulator.
+// C ABI for the Verilator-backed KV metadata table simulator.
 #pragma once
 
 #include <stdint.h>
@@ -6,6 +6,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define KV_NUM_PAGES 16
 
 typedef struct SimHandle SimHandle;
 
@@ -38,9 +40,15 @@ void sim_deassert_event(SimHandle* sim);
 
 int      sim_resp_valid(const SimHandle* sim);
 int      sim_resp_error(const SimHandle* sim);
-void     sim_read_metadata(const SimHandle* sim, KvMetadata* out);
-uint32_t sim_hw_timestamp(const SimHandle* sim);
+int      sim_resp_hit(const SimHandle* sim);
+int      sim_resp_miss(const SimHandle* sim);
+uint32_t sim_resp_entry_id(const SimHandle* sim);
+void     sim_read_resp_metadata(const SimHandle* sim, KvMetadata* out);
 
+int      sim_num_pages(void);
+void     sim_read_table_entry(SimHandle* sim, uint32_t index, KvMetadata* out);
+
+uint32_t sim_hw_timestamp(const SimHandle* sim);
 uint64_t sim_cycle_count(const SimHandle* sim);
 
 void sim_finalize_trace(SimHandle* sim);

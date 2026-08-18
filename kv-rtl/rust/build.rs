@@ -23,7 +23,7 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed={}", root.join("rtl/kv_pkg.sv").display());
-    println!("cargo:rerun-if-changed={}", root.join("rtl/kv_page_tracker.sv").display());
+    println!("cargo:rerun-if-changed={}", root.join("rtl/kv_metadata_engine.sv").display());
     println!("cargo:rerun-if-changed={}", root.join("sim/simulator.cpp").display());
     println!("cargo:rerun-if-changed={}", root.join("sim/simulator.h").display());
 

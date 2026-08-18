@@ -1,9 +1,8 @@
-// Smoke test for checkpoint 1 single-page metadata tracker.
+// Smoke test for checkpoint 2 multi-page metadata table.
 
 #include "simulator.h"
 
 #include <cstdio>
-#include <cstdlib>
 
 namespace {
 
@@ -21,6 +20,12 @@ void drive(SimHandle* sim, uint8_t op, uint16_t req, uint16_t page, uint16_t ts)
     sim_drive_event(sim, 1, &ev);
 }
 
+void submit(SimHandle* sim) {
+    sim_tick(sim);
+    sim_deassert_event(sim);
+    sim_tick(sim);
+}
+
 }  // namespace
 
 int main() {
@@ -29,36 +34,34 @@ int main() {
         return fail("sim_create returned null");
     }
 
-    if (sim_resp_valid(sim)) {
-        return fail("resp_valid asserted after reset");
+    drive(sim, 3, 1, 10, 0);  // ALLOCATE page 10
+    submit(sim);
+    if (!sim_resp_valid(sim) || sim_resp_error(sim)) {
+        return fail("allocate page 10 failed");
     }
 
-    drive(sim, 3, 42, 173, 5);  // ALLOCATE
-    sim_tick(sim);
-    sim_deassert_event(sim);
-    sim_tick(sim);
+    drive(sim, 3, 1, 11, 1);  // ALLOCATE page 11
+    submit(sim);
 
-    if (!sim_resp_valid(sim) || sim_resp_error(sim)) {
-        return fail("allocate response incorrect");
+    drive(sim, 4, 1, 10, 5);  // ACCESS page 10
+    submit(sim);
+    if (!sim_resp_hit(sim) || sim_resp_miss(sim)) {
+        return fail("access hit expected");
     }
 
     KvMetadata meta{};
-    sim_read_metadata(sim, &meta);
-    if (!meta.valid || meta.page_id != 173 || meta.refcount != 1) {
-        return fail("metadata after allocate incorrect");
+    sim_read_resp_metadata(sim, &meta);
+    if (meta.access_count != 1) {
+        return fail("access count incorrect");
     }
 
-    drive(sim, 0, 42, 173, 99);  // READ
-    sim_tick(sim);
-    sim_deassert_event(sim);
-    sim_tick(sim);
-
-    sim_read_metadata(sim, &meta);
-    if (meta.access_count != 1 || meta.last_access != 99) {
-        return fail("metadata after read incorrect");
+    drive(sim, 4, 1, 99, 6);  // ACCESS miss
+    submit(sim);
+    if (!sim_resp_miss(sim) || sim_resp_hit(sim)) {
+        return fail("access miss expected");
     }
 
-    std::printf("PASS: C++ checkpoint 1 smoke tests (%llu cycles)\n",
+    std::printf("PASS: C++ checkpoint 2 smoke tests (%llu cycles)\n",
                 static_cast<unsigned long long>(sim_cycle_count(sim)));
 
     sim_destroy(sim);

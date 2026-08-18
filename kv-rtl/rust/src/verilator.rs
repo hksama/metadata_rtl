@@ -1,7 +1,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-use crate::types::{AccessEvent, PageMetadata, PageState};
+use crate::types::{AccessEvent, PageMetadata, PageState, NUM_PAGES};
 use crate::MetadataSimulator;
 
 #[repr(C)]
@@ -36,7 +36,11 @@ extern "C" {
     fn sim_deassert_event(sim: *mut SimHandle);
     fn sim_resp_valid(sim: *const SimHandle) -> c_int;
     fn sim_resp_error(sim: *const SimHandle) -> c_int;
-    fn sim_read_metadata(sim: *const SimHandle, out: *mut KvMetadata);
+    fn sim_resp_hit(sim: *const SimHandle) -> c_int;
+    fn sim_resp_miss(sim: *const SimHandle) -> c_int;
+    fn sim_resp_entry_id(sim: *const SimHandle) -> c_uint;
+    fn sim_read_resp_metadata(sim: *const SimHandle, out: *mut KvMetadata);
+    fn sim_read_table_entry(sim: *mut SimHandle, index: u32, out: *mut KvMetadata);
     fn sim_hw_timestamp(sim: *const SimHandle) -> c_uint;
     fn sim_cycle_count(sim: *const SimHandle) -> u64;
     fn sim_finalize_trace(sim: *mut SimHandle);
@@ -120,7 +124,22 @@ impl MetadataSimulator for VerilatorSimulator {
         unsafe { sim_resp_error(self.handle) != 0 }
     }
 
-    fn metadata(&self) -> PageMetadata {
+    fn resp_hit(&self) -> bool {
+        unsafe { sim_resp_hit(self.handle) != 0 }
+    }
+
+    fn resp_miss(&self) -> bool {
+        unsafe { sim_resp_miss(self.handle) != 0 }
+    }
+
+    fn resp_entry_id(&self) -> Option<u8> {
+        if !self.resp_valid() || self.resp_miss() || self.resp_error() {
+            return None;
+        }
+        Some(unsafe { sim_resp_entry_id(self.handle) as u8 })
+    }
+
+    fn resp_metadata(&self) -> PageMetadata {
         let mut raw = KvMetadata {
             valid: 0,
             page_id: 0,
@@ -130,8 +149,26 @@ impl MetadataSimulator for VerilatorSimulator {
             refcount: 0,
             state: 0,
         };
-        unsafe { sim_read_metadata(self.handle, &mut raw) };
+        unsafe { sim_read_resp_metadata(self.handle, &mut raw) };
         from_kv_metadata(raw)
+    }
+
+    fn table_entries(&self) -> Vec<PageMetadata> {
+        let mut entries = Vec::with_capacity(NUM_PAGES);
+        for idx in 0..NUM_PAGES {
+            let mut raw = KvMetadata {
+                valid: 0,
+                page_id: 0,
+                request_id: 0,
+                access_count: 0,
+                last_access: 0,
+                refcount: 0,
+                state: 0,
+            };
+            unsafe { sim_read_table_entry(self.handle, idx as u32, &mut raw) };
+            entries.push(from_kv_metadata(raw));
+        }
+        entries
     }
 
     fn hw_timestamp(&self) -> u16 {
