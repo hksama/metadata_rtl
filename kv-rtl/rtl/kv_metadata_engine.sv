@@ -1,10 +1,13 @@
-// Multi-page KV metadata table engine (checkpoint 2).
+// Multi-page KV metadata table engine with separated hotness engine (checkpoint 3).
 
 import kv_pkg::*;
 
 module kv_metadata_engine #(
-    parameter int NUM_PAGES = kv_pkg::DEFAULT_NUM_PAGES,
-    parameter int ENTRY_IDX_WIDTH = kv_pkg::entry_idx_width(NUM_PAGES)
+    parameter int NUM_PAGES      = kv_pkg::DEFAULT_NUM_PAGES,
+    parameter int ENTRY_IDX_WIDTH = kv_pkg::entry_idx_width(NUM_PAGES),
+    parameter int POLICY         = kv_pkg::POLICY_FREQUENCY,
+    parameter int SCORE_WIDTH    = kv_pkg::DEFAULT_SCORE_WIDTH,
+    parameter int AGING_INTERVAL = kv_pkg::DEFAULT_AGING_INTERVAL
 ) (
     input  logic                          clk,
     input  logic                          rst,
@@ -28,6 +31,8 @@ module kv_metadata_engine #(
     output logic [TIMESTAMP_WIDTH-1:0]  resp_meta_last_access,
     output logic [REFCOUNT_WIDTH-1:0]   resp_meta_refcount,
     output logic [STATE_WIDTH-1:0]      resp_meta_state,
+    output logic [AGING_COUNTER_MAX_WIDTH-1:0] resp_meta_aging_counter,
+    output logic [SCORE_WIDTH-1:0]      resp_hotness_score,
 
     input  logic                          table_read,
     input  logic [ENTRY_IDX_WIDTH-1:0]  table_idx,
@@ -38,6 +43,8 @@ module kv_metadata_engine #(
     output logic [TIMESTAMP_WIDTH-1:0]  table_last_access,
     output logic [REFCOUNT_WIDTH-1:0]   table_refcount,
     output logic [STATE_WIDTH-1:0]      table_state,
+    output logic [AGING_COUNTER_MAX_WIDTH-1:0] table_aging_counter,
+    output logic [SCORE_WIDTH-1:0]      table_hotness_score,
 
     output logic [TIMESTAMP_WIDTH-1:0]  hw_timestamp
 );
@@ -55,14 +62,16 @@ module kv_metadata_engine #(
     logic [TIMESTAMP_WIDTH-1:0]            entry_last_access [NUM_PAGES];
     logic [REFCOUNT_WIDTH-1:0]             entry_refcount    [NUM_PAGES];
     logic [STATE_WIDTH-1:0]                entry_state       [NUM_PAGES];
+    logic [AGING_COUNTER_MAX_WIDTH-1:0]    entry_aging_counter[NUM_PAGES];
 
-  logic [NUM_PAGES-1:0]                    next_entry_valid;
-  logic [PAGE_ID_WIDTH-1:0]              next_entry_page_id     [NUM_PAGES];
-  logic [REQUEST_ID_WIDTH-1:0]           next_entry_request_id  [NUM_PAGES];
-  logic [COUNTER_WIDTH-1:0]              next_entry_access_count[NUM_PAGES];
-  logic [TIMESTAMP_WIDTH-1:0]            next_entry_last_access [NUM_PAGES];
-  logic [REFCOUNT_WIDTH-1:0]             next_entry_refcount    [NUM_PAGES];
-  logic [STATE_WIDTH-1:0]                next_entry_state       [NUM_PAGES];
+    logic [NUM_PAGES-1:0]                    next_entry_valid;
+    logic [PAGE_ID_WIDTH-1:0]              next_entry_page_id     [NUM_PAGES];
+    logic [REQUEST_ID_WIDTH-1:0]           next_entry_request_id  [NUM_PAGES];
+    logic [COUNTER_WIDTH-1:0]              next_entry_access_count[NUM_PAGES];
+    logic [TIMESTAMP_WIDTH-1:0]            next_entry_last_access [NUM_PAGES];
+    logic [REFCOUNT_WIDTH-1:0]             next_entry_refcount    [NUM_PAGES];
+    logic [STATE_WIDTH-1:0]                next_entry_state       [NUM_PAGES];
+    logic [AGING_COUNTER_MAX_WIDTH-1:0]    next_entry_aging_counter[NUM_PAGES];
 
     logic                          resp_meta_valid_r;
     logic [PAGE_ID_WIDTH-1:0]    resp_meta_page_id_r;
@@ -71,6 +80,8 @@ module kv_metadata_engine #(
     logic [TIMESTAMP_WIDTH-1:0]  resp_meta_last_access_r;
     logic [REFCOUNT_WIDTH-1:0]   resp_meta_refcount_r;
     logic [STATE_WIDTH-1:0]      resp_meta_state_r;
+    logic [AGING_COUNTER_MAX_WIDTH-1:0] resp_meta_aging_counter_r;
+    logic [SCORE_WIDTH-1:0]      resp_hotness_score_r;
 
     logic                          lk_found;
     logic [ENTRY_IDX_WIDTH-1:0]  lk_entry_id;
@@ -88,12 +99,27 @@ module kv_metadata_engine #(
     logic [TIMESTAMP_WIDTH-1:0]  next_meta_last_access;
     logic [REFCOUNT_WIDTH-1:0]   next_meta_refcount;
     logic [STATE_WIDTH-1:0]      next_meta_state;
+    logic [AGING_COUNTER_MAX_WIDTH-1:0] next_meta_aging_counter;
+    logic [SCORE_WIDTH-1:0]      next_hotness_score;
+
+    logic                          global_age_tick;
+    logic [SCORE_WIDTH-1:0]      entry_hotness_score[NUM_PAGES];
+    logic [AGING_COUNTER_MAX_WIDTH-1:0] entry_aged_unused[NUM_PAGES];
 
     integer lk_i;
     integer free_i;
     integer upd_i;
     integer rst_i;
     integer commit_i;
+
+    logic [COUNTER_WIDTH-1:0]              access_new_count;
+    logic [AGING_COUNTER_MAX_WIDTH-1:0]    access_aged_counter;
+    logic [DEFAULT_SCORE_WIDTH-1:0]        access_score_full;
+
+    assign global_age_tick = (AGING_INTERVAL != 0) &&
+                             (hw_timestamp != '0) &&
+                             ((hw_timestamp % TIMESTAMP_WIDTH'(AGING_INTERVAL)) == '0) &&
+                             ((POLICY == POLICY_AGING_2BIT) || (POLICY == POLICY_AGING_4BIT));
 
     always_comb begin
         lk_found = 1'b0;
@@ -117,6 +143,40 @@ module kv_metadata_engine #(
         end
     end
 
+    genvar gi;
+    generate
+        for (gi = 0; gi < NUM_PAGES; gi++) begin : gen_hotness
+            logic is_accessed_entry;
+            logic do_age_entry;
+            logic [SCORE_WIDTH-1:0] score_out;
+
+            assign is_accessed_entry = ev_pending &&
+                                       lk_found &&
+                                       (lk_entry_id == ENTRY_IDX_WIDTH'(gi)) &&
+                                       is_access_op(ev_operation);
+            assign do_age_entry = global_age_tick && entry_valid[gi] && !is_accessed_entry;
+
+            kv_hotness_engine #(
+                .POLICY(POLICY),
+                .SCORE_WIDTH(SCORE_WIDTH)
+            ) u_hotness (
+                .entry_valid           (entry_valid[gi]),
+                .access_count          (entry_access_count[gi]),
+                .last_access           (entry_last_access[gi]),
+                .aging_counter_in      (entry_aging_counter[gi]),
+                .is_access             (is_accessed_entry),
+                .do_age                (do_age_entry),
+                .current_timestamp     (hw_timestamp),
+                .aging_counter_out     (entry_aged_unused[gi]),
+                .hotness_score         (score_out)
+            );
+
+            always_comb begin
+                entry_hotness_score[gi] = score_out;
+            end
+        end
+    endgenerate
+
     always_comb begin
         for (upd_i = 0; upd_i < NUM_PAGES; upd_i++) begin
             next_entry_valid[upd_i]        = entry_valid[upd_i];
@@ -126,6 +186,7 @@ module kv_metadata_engine #(
             next_entry_last_access[upd_i]  = entry_last_access[upd_i];
             next_entry_refcount[upd_i]     = entry_refcount[upd_i];
             next_entry_state[upd_i]        = entry_state[upd_i];
+            next_entry_aging_counter[upd_i] = entry_aging_counter[upd_i];
         end
 
         next_error            = 1'b0;
@@ -139,8 +200,27 @@ module kv_metadata_engine #(
         next_meta_last_access = '0;
         next_meta_refcount    = '0;
         next_meta_state       = STATE_INVALID;
+        next_meta_aging_counter = '0;
+        next_hotness_score    = '0;
+        access_new_count      = '0;
+        access_aged_counter   = '0;
+        access_score_full     = '0;
 
         if (ev_pending) begin
+            if (global_age_tick) begin
+                for (upd_i = 0; upd_i < NUM_PAGES; upd_i++) begin
+                    if (entry_valid[upd_i]) begin
+                        logic is_target;
+                        is_target = lk_found && (lk_entry_id == ENTRY_IDX_WIDTH'(upd_i)) &&
+                                    is_access_op(ev_operation);
+                        if (!is_target) begin
+                            next_entry_aging_counter[upd_i] =
+                                entry_aging_counter[upd_i] >> 1;
+                        end
+                    end
+                end
+            end
+
             unique case (ev_operation)
                 OP_ALLOCATE: begin
                     if (lk_found) begin
@@ -155,6 +235,7 @@ module kv_metadata_engine #(
                         next_entry_last_access[free_entry_id]  = '0;
                         next_entry_refcount[free_entry_id]     = sat_inc_ref('0);
                         next_entry_state[free_entry_id]        = STATE_VALID;
+                        next_entry_aging_counter[free_entry_id] = '0;
                         next_entry_id                          = free_entry_id;
                         next_meta_valid                        = 1'b1;
                         next_meta_page_id                      = ev_page_id;
@@ -163,6 +244,8 @@ module kv_metadata_engine #(
                         next_meta_last_access                  = '0;
                         next_meta_refcount                     = sat_inc_ref('0);
                         next_meta_state                        = STATE_VALID;
+                        next_meta_aging_counter                = '0;
+                        next_hotness_score                     = entry_hotness_score[free_entry_id];
                     end
                 end
 
@@ -172,13 +255,32 @@ module kv_metadata_engine #(
                     end else begin
                         next_hit = 1'b1;
                         next_entry_id = lk_entry_id;
-                        next_entry_access_count[lk_entry_id] =
-                            sat_inc_u(entry_access_count[lk_entry_id]);
+                        access_new_count = sat_inc_u(entry_access_count[lk_entry_id]);
+                        next_entry_access_count[lk_entry_id] = access_new_count;
                         next_entry_last_access[lk_entry_id] = ev_timestamp;
+
+                        access_aged_counter = policy_update_aging(
+                            POLICY,
+                            entry_aging_counter[lk_entry_id],
+                            1'b1,
+                            1'b0
+                        );
+                        next_entry_aging_counter[lk_entry_id] = access_aged_counter;
+                        next_meta_aging_counter = access_aged_counter;
+                        access_score_full = policy_score(
+                            POLICY,
+                            1'b1,
+                            access_new_count,
+                            ev_timestamp,
+                            access_aged_counter,
+                            hw_timestamp
+                        );
+                        next_hotness_score = access_score_full[SCORE_WIDTH-1:0];
+
                         next_meta_valid        = 1'b1;
                         next_meta_page_id      = entry_page_id[lk_entry_id];
                         next_meta_request_id   = entry_request_id[lk_entry_id];
-                        next_meta_access_count = sat_inc_u(entry_access_count[lk_entry_id]);
+                        next_meta_access_count = access_new_count;
                         next_meta_last_access  = ev_timestamp;
                         next_meta_refcount     = entry_refcount[lk_entry_id];
                         next_meta_state        = entry_state[lk_entry_id];
@@ -202,6 +304,8 @@ module kv_metadata_engine #(
                         next_meta_last_access  = entry_last_access[lk_entry_id];
                         next_meta_refcount     = sat_dec_ref(entry_refcount[lk_entry_id]);
                         next_meta_state        = entry_state[lk_entry_id];
+                        next_meta_aging_counter = entry_aging_counter[lk_entry_id];
+                        next_hotness_score     = entry_hotness_score[lk_entry_id];
                     end
                 end
 
@@ -220,6 +324,8 @@ module kv_metadata_engine #(
         table_last_access  = '0;
         table_refcount     = '0;
         table_state        = STATE_INVALID;
+        table_aging_counter = '0;
+        table_hotness_score = '0;
 
         if (table_read) begin
             table_valid        = entry_valid[table_idx];
@@ -229,6 +335,8 @@ module kv_metadata_engine #(
             table_last_access  = entry_last_access[table_idx];
             table_refcount     = entry_refcount[table_idx];
             table_state        = entry_state[table_idx];
+            table_aging_counter = entry_aging_counter[table_idx];
+            table_hotness_score = entry_hotness_score[table_idx];
         end
     end
 
@@ -253,6 +361,8 @@ module kv_metadata_engine #(
             resp_meta_last_access_r  <= '0;
             resp_meta_refcount_r     <= '0;
             resp_meta_state_r        <= STATE_INVALID;
+            resp_meta_aging_counter_r <= '0;
+            resp_hotness_score_r     <= '0;
 
             for (rst_i = 0; rst_i < NUM_PAGES; rst_i++) begin
                 entry_valid[rst_i]        <= 1'b0;
@@ -262,6 +372,7 @@ module kv_metadata_engine #(
                 entry_last_access[rst_i]  <= '0;
                 entry_refcount[rst_i]     <= '0;
                 entry_state[rst_i]        <= STATE_INVALID;
+                entry_aging_counter[rst_i] <= '0;
             end
 
             hw_timestamp <= '0;
@@ -287,6 +398,8 @@ module kv_metadata_engine #(
                 resp_meta_last_access_r  <= next_meta_last_access;
                 resp_meta_refcount_r     <= next_meta_refcount;
                 resp_meta_state_r        <= next_meta_state;
+                resp_meta_aging_counter_r <= next_meta_aging_counter;
+                resp_hotness_score_r     <= next_hotness_score;
 
                 for (commit_i = 0; commit_i < NUM_PAGES; commit_i++) begin
                     entry_valid[commit_i]        <= next_entry_valid[commit_i];
@@ -296,6 +409,7 @@ module kv_metadata_engine #(
                     entry_last_access[commit_i]  <= next_entry_last_access[commit_i];
                     entry_refcount[commit_i]     <= next_entry_refcount[commit_i];
                     entry_state[commit_i]        <= next_entry_state[commit_i];
+                    entry_aging_counter[commit_i] <= next_entry_aging_counter[commit_i];
                 end
 
                 ev_pending <= 1'b0;
@@ -305,6 +419,12 @@ module kv_metadata_engine #(
                 ev_timestamp  <= event_timestamp;
                 ev_operation  <= operation;
                 ev_pending    <= 1'b1;
+            end else if (global_age_tick) begin
+                for (commit_i = 0; commit_i < NUM_PAGES; commit_i++) begin
+                    if (entry_valid[commit_i]) begin
+                        entry_aging_counter[commit_i] <= entry_aging_counter[commit_i] >> 1;
+                    end
+                end
             end
         end
     end
@@ -316,5 +436,7 @@ module kv_metadata_engine #(
     assign resp_meta_last_access  = resp_meta_last_access_r;
     assign resp_meta_refcount     = resp_meta_refcount_r;
     assign resp_meta_state        = resp_meta_state_r;
+    assign resp_meta_aging_counter = resp_meta_aging_counter_r;
+    assign resp_hotness_score     = resp_hotness_score_r;
 
 endmodule

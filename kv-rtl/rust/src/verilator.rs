@@ -24,6 +24,8 @@ struct KvMetadata {
     last_access: u16,
     refcount: u8,
     state: u8,
+    aging_counter: u8,
+    hotness_score: u8,
 }
 
 extern "C" {
@@ -40,6 +42,7 @@ extern "C" {
     fn sim_resp_miss(sim: *const SimHandle) -> c_int;
     fn sim_resp_entry_id(sim: *const SimHandle) -> c_uint;
     fn sim_read_resp_metadata(sim: *const SimHandle, out: *mut KvMetadata);
+    fn sim_resp_hotness_score(sim: *const SimHandle) -> c_uint;
     fn sim_read_table_entry(sim: *mut SimHandle, index: u32, out: *mut KvMetadata);
     fn sim_hw_timestamp(sim: *const SimHandle) -> c_uint;
     fn sim_cycle_count(sim: *const SimHandle) -> u64;
@@ -95,6 +98,8 @@ fn from_kv_metadata(raw: KvMetadata) -> PageMetadata {
         } else {
             PageState::Invalid
         },
+        aging_counter: raw.aging_counter,
+        hotness_score: raw.hotness_score,
     }
 }
 
@@ -148,9 +153,15 @@ impl MetadataSimulator for VerilatorSimulator {
             last_access: 0,
             refcount: 0,
             state: 0,
+            aging_counter: 0,
+            hotness_score: 0,
         };
         unsafe { sim_read_resp_metadata(self.handle, &mut raw) };
         from_kv_metadata(raw)
+    }
+
+    fn resp_hotness_score(&self) -> u8 {
+        unsafe { sim_resp_hotness_score(self.handle) as u8 }
     }
 
     fn table_entries(&self) -> Vec<PageMetadata> {
@@ -164,6 +175,8 @@ impl MetadataSimulator for VerilatorSimulator {
                 last_access: 0,
                 refcount: 0,
                 state: 0,
+                aging_counter: 0,
+                hotness_score: 0,
             };
             unsafe { sim_read_table_entry(self.handle, idx as u32, &mut raw) };
             entries.push(from_kv_metadata(raw));

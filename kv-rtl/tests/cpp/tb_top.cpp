@@ -54,6 +54,9 @@ int main() {
     if (meta.access_count != 1) {
         return fail("access count incorrect");
     }
+    if (sim_resp_hotness_score(sim) != 1) {
+        return fail("hotness score should equal access count for frequency policy");
+    }
 
     drive(sim, 4, 1, 99, 6);  // ACCESS miss
     submit(sim);
@@ -61,7 +64,7 @@ int main() {
         return fail("access miss expected");
     }
 
-    std::printf("PASS: C++ checkpoint 2 smoke tests (%llu cycles)\n",
+    std::printf("PASS: C++ checkpoint 3 smoke tests (%llu cycles)\n",
                 static_cast<unsigned long long>(sim_cycle_count(sim)));
 
     sim_destroy(sim);

@@ -1,0 +1,9 @@
+metric,value
+events,200
+cycles,600
+cycles_per_event,3.0000
+hits,68
+misses,84
+allocations,33
+releases,25
+errors,38

@@ -2,7 +2,8 @@
 name = "kv-rtl"
 version = "0.1.0"
 edition = "2021"
-description = "Checkpoint 0 Rust simulation harness for KV-RTL infrastructure"
+description = "Checkpoint 3 Rust simulation harness for KV-RTL hotness policies"
+default-run = "kv-rtl-harness"
 
 [lib]
 name = "kv_rtl"
@@ -11,6 +12,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "kv-rtl-harness"
 path = "src/main.rs"
+
+[[bin]]
+name = "kv-eval"
+path = "src/bin/kv-eval.rs"
 
 [[example]]
 name = "trace_demo"

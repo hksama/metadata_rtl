@@ -1,13 +1,17 @@
+use crate::policy::{
+    policy_score, policy_update_aging, refresh_scores, should_age_tick, PolicyConfig,
+};
 use crate::types::{
     sat_dec_u8, sat_inc_u16, sat_inc_u8, AccessEvent, Operation, PageMetadata, PageState,
     NUM_PAGES,
 };
 
-/// Golden software reference for multi-page metadata table updates.
+/// Golden software reference for multi-page metadata table + hotness engine.
 #[derive(Debug, Clone)]
 pub struct MetadataTable {
     pub entries: Vec<PageMetadata>,
     pub hw_timestamp: u16,
+    pub policy_config: PolicyConfig,
     pending_event: Option<AccessEvent>,
 }
 
@@ -19,6 +23,7 @@ pub struct EventResult {
     pub resp_miss: bool,
     pub resp_entry_id: Option<u8>,
     pub resp_metadata: PageMetadata,
+    pub resp_hotness_score: u8,
 }
 
 impl EventResult {
@@ -29,20 +34,27 @@ impl EventResult {
         resp_miss: false,
         resp_entry_id: None,
         resp_metadata: PageMetadata::INVALID,
+        resp_hotness_score: 0,
     };
 }
 
 impl MetadataTable {
     pub fn new() -> Self {
+        Self::with_policy(PolicyConfig::default())
+    }
+
+    pub fn with_policy(policy_config: PolicyConfig) -> Self {
         Self {
             entries: vec![PageMetadata::INVALID; NUM_PAGES],
             hw_timestamp: 0,
+            policy_config,
             pending_event: None,
         }
     }
 
     pub fn reset(&mut self) {
-        *self = Self::new();
+        let config = self.policy_config;
+        *self = Self::with_policy(config);
     }
 
     pub fn lookup_page(&self, page_id: u16) -> Option<usize> {
@@ -57,6 +69,15 @@ impl MetadataTable {
 
     pub fn step(&mut self, event: Option<AccessEvent>) -> EventResult {
         self.hw_timestamp = self.hw_timestamp.wrapping_add(1);
+
+        if should_age_tick(
+            self.policy_config.policy,
+            self.hw_timestamp,
+            self.policy_config.aging_interval,
+        ) && self.pending_event.is_none()
+        {
+            self.apply_global_aging();
+        }
 
         if let Some(pending) = self.pending_event.take() {
             return self.apply_committed_event(pending);
@@ -74,7 +95,31 @@ impl MetadataTable {
         self.step(None)
     }
 
+    fn apply_global_aging(&mut self) {
+        for entry in self.entries.iter_mut().filter(|e| e.valid) {
+            entry.aging_counter = policy_update_aging(
+                self.policy_config.policy,
+                entry.aging_counter,
+                false,
+                true,
+            );
+        }
+        refresh_scores(
+            &mut self.entries,
+            &self.policy_config,
+            self.hw_timestamp,
+        );
+    }
+
     fn apply_committed_event(&mut self, event: AccessEvent) -> EventResult {
+        if should_age_tick(
+            self.policy_config.policy,
+            self.hw_timestamp,
+            self.policy_config.aging_interval,
+        ) {
+            self.apply_global_aging();
+        }
+
         match event.operation {
             Operation::Allocate => self.apply_allocate(event),
             Operation::Read | Operation::Write | Operation::Access => self.apply_access(event),
@@ -105,15 +150,25 @@ impl MetadataTable {
             refcount: sat_inc_u8(0),
             valid: true,
             state: PageState::Valid,
+            aging_counter: 0,
+            hotness_score: 0,
         };
         self.entries[idx] = meta;
+        let score = policy_score(
+            self.policy_config.policy,
+            self.policy_config.score_width,
+            &meta,
+            self.hw_timestamp,
+        );
+        self.entries[idx].hotness_score = score;
         EventResult {
             resp_valid: true,
             resp_error: false,
             resp_hit: false,
             resp_miss: false,
             resp_entry_id: Some(idx as u8),
-            resp_metadata: meta,
+            resp_metadata: self.entries[idx],
+            resp_hotness_score: score,
         }
     }
 
@@ -126,11 +181,25 @@ impl MetadataTable {
                 resp_miss: true,
                 resp_entry_id: None,
                 resp_metadata: PageMetadata::INVALID,
+                resp_hotness_score: 0,
             };
         };
         let entry = &mut self.entries[idx];
         entry.access_count = sat_inc_u16(entry.access_count);
         entry.last_access = event.timestamp;
+        entry.aging_counter = policy_update_aging(
+            self.policy_config.policy,
+            entry.aging_counter,
+            true,
+            false,
+        );
+        let score = policy_score(
+            self.policy_config.policy,
+            self.policy_config.score_width,
+            entry,
+            self.hw_timestamp,
+        );
+        entry.hotness_score = score;
         EventResult {
             resp_valid: true,
             resp_error: false,
@@ -138,6 +207,7 @@ impl MetadataTable {
             resp_miss: false,
             resp_entry_id: Some(idx as u8),
             resp_metadata: *entry,
+            resp_hotness_score: score,
         }
     }
 
@@ -158,6 +228,7 @@ impl MetadataTable {
         }
         let entry = &mut self.entries[idx];
         entry.refcount = sat_dec_u8(entry.refcount);
+        let score = entry.hotness_score;
         EventResult {
             resp_valid: true,
             resp_error: false,
@@ -165,6 +236,7 @@ impl MetadataTable {
             resp_miss: false,
             resp_entry_id: Some(idx as u8),
             resp_metadata: *entry,
+            resp_hotness_score: score,
         }
     }
 }
@@ -175,23 +247,24 @@ impl Default for MetadataTable {
     }
 }
 
-// Backward-compatible alias used by earlier checkpoints.
 pub type PageTracker = MetadataTable;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::HotnessPolicy;
 
     #[test]
     fn multi_page_allocate_and_access() {
         let mut table = MetadataTable::new();
-        assert!(!table.submit_event(AccessEvent {
-            request_id: 1,
-            page_id: 10,
-            timestamp: 0,
-            operation: Operation::Allocate,
-        })
-        .resp_error);
+        assert!(!table
+            .submit_event(AccessEvent {
+                request_id: 1,
+                page_id: 10,
+                timestamp: 0,
+                operation: Operation::Allocate,
+            })
+            .resp_error);
 
         let hit = table.submit_event(AccessEvent {
             request_id: 1,
@@ -201,5 +274,30 @@ mod tests {
         });
         assert!(hit.resp_hit);
         assert_eq!(hit.resp_metadata.access_count, 1);
+        assert_eq!(hit.resp_hotness_score, 1);
+    }
+
+    #[test]
+    fn aging2_increments_on_access() {
+        let mut table = MetadataTable::with_policy(PolicyConfig {
+            policy: HotnessPolicy::Aging2Bit,
+            ..PolicyConfig::default()
+        });
+        table
+            .submit_event(AccessEvent {
+                request_id: 1,
+                page_id: 1,
+                timestamp: 0,
+                operation: Operation::Allocate,
+            })
+            .resp_error;
+        let r = table.submit_event(AccessEvent {
+            request_id: 1,
+            page_id: 1,
+            timestamp: 1,
+            operation: Operation::Access,
+        });
+        assert_eq!(r.resp_metadata.aging_counter, 1);
+        assert_eq!(r.resp_hotness_score, 1);
     }
 }

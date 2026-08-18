@@ -6,11 +6,23 @@ BUILD_DIR="${ROOT}/build"
 VERILATOR_DIR="${BUILD_DIR}/verilator"
 RTL_FILES=(
     "${ROOT}/rtl/kv_pkg.sv"
+    "${ROOT}/rtl/kv_hotness_engine.sv"
     "${ROOT}/rtl/kv_metadata_engine.sv"
     "${ROOT}/rtl/top.sv"
 )
 NUM_PAGES="${NUM_PAGES:-16}"
+POLICY="${POLICY:-FREQUENCY}"
+SCORE_WIDTH="${SCORE_WIDTH:-8}"
+AGING_INTERVAL="${AGING_INTERVAL:-64}"
 VERILATOR_INCLUDE="${VERILATOR_INCLUDE:-/usr/share/verilator/include}"
+
+case "${POLICY}" in
+    FREQUENCY|FREQ) POLICY_ID=0 ;;
+    AGING2|AGING_2BIT) POLICY_ID=1 ;;
+    AGING4|AGING_4BIT) POLICY_ID=2 ;;
+    LRU|APPROX_LRU) POLICY_ID=3 ;;
+    *) echo "Unknown POLICY=${POLICY}" >&2; exit 1 ;;
+esac
 
 mkdir -p "${BUILD_DIR}"
 
@@ -21,10 +33,13 @@ if [[ "${TRACE_FMT}" == "fst" ]]; then
 fi
 
 verilator \
-    -Wall -Wno-DECLFILENAME -Wno-IMPORTSTAR \
+    -Wall -Wno-DECLFILENAME -Wno-IMPORTSTAR -Wno-UNUSEDSIGNAL \
     --cc \
     -Mdir "${VERILATOR_DIR}" \
     -GNUM_PAGES="${NUM_PAGES}" \
+    -GPOLICY="${POLICY_ID}" \
+    -GSCORE_WIDTH="${SCORE_WIDTH}" \
+    -GAGING_INTERVAL="${AGING_INTERVAL}" \
     --top-module top \
     --trace \
     "${RTL_FILES[@]}"
@@ -52,4 +67,4 @@ g++ -std=c++17 -O2 \
     -DVM_TRACE=1 ${TRACE_CFLAGS} \
     -o "${BUILD_DIR}/tb_top"
 
-echo "Verilator model and C++ testbench built under ${BUILD_DIR}"
+echo "Verilator model built: POLICY=${POLICY} SCORE_WIDTH=${SCORE_WIDTH} AGING_INTERVAL=${AGING_INTERVAL}"

@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 #define KV_NUM_PAGES 16
+#define KV_SCORE_WIDTH 8
 
 typedef struct SimHandle SimHandle;
 
@@ -26,6 +27,8 @@ typedef struct {
     uint16_t last_access;
     uint8_t  refcount;
     uint8_t  state;
+    uint8_t  aging_counter;
+    uint8_t  hotness_score;
 } KvMetadata;
 
 SimHandle* sim_create(void);
@@ -44,6 +47,7 @@ int      sim_resp_hit(const SimHandle* sim);
 int      sim_resp_miss(const SimHandle* sim);
 uint32_t sim_resp_entry_id(const SimHandle* sim);
 void     sim_read_resp_metadata(const SimHandle* sim, KvMetadata* out);
+uint8_t  sim_resp_hotness_score(const SimHandle* sim);
 
 int      sim_num_pages(void);
 void     sim_read_table_entry(SimHandle* sim, uint32_t index, KvMetadata* out);

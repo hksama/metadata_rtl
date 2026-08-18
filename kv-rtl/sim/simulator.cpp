@@ -96,6 +96,8 @@ static void read_metadata_fields(
     uint16_t last_access,
     uint8_t refcount,
     uint8_t state,
+    uint8_t aging_counter,
+    uint8_t hotness_score,
     KvMetadata* out
 ) {
     out->valid = valid;
@@ -105,6 +107,8 @@ static void read_metadata_fields(
     out->last_access = last_access;
     out->refcount = refcount;
     out->state = state;
+    out->aging_counter = aging_counter;
+    out->hotness_score = hotness_score;
 }
 
 extern "C" {
@@ -197,8 +201,14 @@ void sim_read_resp_metadata(const SimHandle* sim, KvMetadata* out) {
         static_cast<uint16_t>(sim->top->resp_meta_last_access),
         static_cast<uint8_t>(sim->top->resp_meta_refcount),
         static_cast<uint8_t>(sim->top->resp_meta_state),
+        static_cast<uint8_t>(sim->top->resp_meta_aging_counter),
+        static_cast<uint8_t>(sim->top->resp_hotness_score),
         out
     );
+}
+
+uint8_t sim_resp_hotness_score(const SimHandle* sim) {
+    return static_cast<uint8_t>(sim->top->resp_hotness_score);
 }
 
 int sim_num_pages(void) {
@@ -217,6 +227,8 @@ void sim_read_table_entry(SimHandle* sim, uint32_t index, KvMetadata* out) {
         static_cast<uint16_t>(sim->top->table_last_access),
         static_cast<uint8_t>(sim->top->table_refcount),
         static_cast<uint8_t>(sim->top->table_state),
+        static_cast<uint8_t>(sim->top->table_aging_counter),
+        static_cast<uint8_t>(sim->top->table_hotness_score),
         out
     );
     sim->top->table_read = 0;
