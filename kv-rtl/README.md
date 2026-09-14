@@ -10,6 +10,18 @@ cd kv-rtl
 make test
 ```
 
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [docs/code_architecture.md](docs/code_architecture.md) | Documentation index |
+| [docs/rust_architecture.md](docs/rust_architecture.md) | Rust modules, data flow, binaries |
+| [docs/rtl_architecture.md](docs/rtl_architecture.md) | SystemVerilog modules and parameters |
+| [docs/rtl/README.md](docs/rtl/README.md) | Detailed per-file SV reference |
+| [docs/implementation_map.md](docs/implementation_map.md) | Rust vs RTL vs not implemented |
+| [docs/protocol.md](docs/protocol.md) | Event protocol and timing |
+| [docs/hotness_policies.md](docs/hotness_policies.md) | Hotness policies (CP3) |
+
 ## Configure table size
 
 ```bash

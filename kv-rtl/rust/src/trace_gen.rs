@@ -24,6 +24,7 @@ pub enum TracePattern {
     Random,
 }
 
+/// Parameters controlling trace generation (seed, length, pattern-specific knobs).
 #[derive(Debug, Clone)]
 pub struct TraceConfig {
     pub seed: u64,
@@ -57,6 +58,7 @@ impl Default for TraceConfig {
     }
 }
 
+/// Simple deterministic LCG for reproducible synthetic traces (not crypto-grade).
 struct LcgRng {
     state: u64,
 }
@@ -91,7 +93,7 @@ impl LcgRng {
     }
 }
 
-/// Generate a synthetic access trace.
+/// Dispatch to pattern-specific generator based on config.pattern.
 pub fn generate_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     match config.pattern {
         TracePattern::Agentic => generate_agentic_trace(config),
@@ -107,6 +109,8 @@ pub fn generate_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     }
 }
 
+/// Sequential scan: allocate pages 0,1,2… then cycle through them.
+/// Tests whether frequency policy falsely marks scans as hot.
 fn generate_sequential_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let mut trace = Vec::with_capacity(config.num_events);
     let mut ts = 0u16;
@@ -143,6 +147,7 @@ fn generate_sequential_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Uniform random page IDs — minimal locality baseline.
 fn generate_uniform_random_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let mut rng = LcgRng::new(config.seed);
     let mut trace = Vec::with_capacity(config.num_events);
@@ -173,6 +178,7 @@ fn generate_uniform_random_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// ~70% accesses to one hot page, rest random — strong locality test.
 fn generate_single_hot_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let mut rng = LcgRng::new(config.seed);
     let hot_page = 1u16;
@@ -203,6 +209,7 @@ fn generate_single_hot_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Rotating accesses among pages {1,2,3} — multiple simultaneous hot pages.
 fn generate_multiple_hot_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let hot_pages = [1u16, 2, 3];
     let mut trace = Vec::with_capacity(config.num_events);
@@ -231,6 +238,7 @@ fn generate_multiple_hot_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Bursts on page bases 100→200→300→100 — tests recency/aging adaptation.
 fn generate_bursty_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let bursts = [
         (100u16, 5usize),
@@ -279,6 +287,7 @@ fn generate_bursty_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Zipf-skewed page popularity (alpha from config) — approximates real cache skew.
 fn generate_zipf_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let n = config.page_pool.max(2) as usize;
     let weights = zipf_weights(n, config.zipf_alpha);
@@ -313,6 +322,7 @@ fn generate_zipf_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Build normalized Zipf weight vector: w_i ∝ 1/i^alpha.
 fn zipf_weights(n: usize, alpha: f64) -> Vec<f64> {
     let mut weights = Vec::with_capacity(n);
     let mut sum = 0.0;
@@ -327,6 +337,7 @@ fn zipf_weights(n: usize, alpha: f64) -> Vec<f64> {
     weights
 }
 
+/// Sample index from discrete weight distribution.
 fn weighted_pick(rng: &mut LcgRng, weights: &[f64]) -> usize {
     let r = rng.next_f64();
     let mut cumulative = 0.0;
@@ -409,6 +420,7 @@ fn generate_agentic_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// CP2-style mixed hot/warm/cold workload with alloc/access/release/miss mix.
 fn generate_mixed_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     let mut rng = LcgRng::new(config.seed);
     let mut trace = Vec::with_capacity(config.num_events);
@@ -543,6 +555,7 @@ fn generate_mixed_trace(config: &TraceConfig) -> Vec<AccessEvent> {
     trace
 }
 
+/// Helper for random/bursty patterns: weighted alloc/access/release/miss.
 fn pick_random_event(
     rng: &mut LcgRng,
     config: &TraceConfig,
@@ -582,6 +595,8 @@ fn pick_random_event(
     }
 }
 
+/// Track locally which page_ids have been allocated in the generator
+/// (mirrors table state for realistic alloc/release sequences).
 fn update_allocated(allocated: &mut Vec<u16>, event: &AccessEvent) {
     match event.operation {
         Operation::Allocate => {
@@ -598,7 +613,7 @@ fn update_allocated(allocated: &mut Vec<u16>, event: &AccessEvent) {
     }
 }
 
-/// Write a human-readable trace listing (A/R prefixes) for inspection.
+/// Write trace as human-readable lines: A=allocate, C=access, R=release.
 pub fn write_trace_listing(path: &std::path::Path, trace: &[AccessEvent]) -> std::io::Result<()> {
     use std::io::Write;
     let mut file = std::fs::File::create(path)?;
@@ -613,7 +628,7 @@ pub fn write_trace_listing(path: &std::path::Path, trace: &[AccessEvent]) -> std
     Ok(())
 }
 
-/// All checkpoint 3 workload patterns for evaluation sweeps.
+/// Workloads used by evaluate_all_policies().
 pub fn all_workload_patterns() -> Vec<(TracePattern, &'static str)> {
     vec![
         (TracePattern::Sequential, "sequential"),

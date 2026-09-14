@@ -13,6 +13,9 @@
 
 #include <cstdint>
 
+// extern "C" functions below are the stable C ABI (simulator.h).
+// Most sim_resp_* / sim_hw_timestamp / sim_cycle_count calls are direct port reads.
+
 struct SimHandle {
     Vtop*            top;
     uint64_t         cycle_count;
@@ -26,6 +29,8 @@ struct SimHandle {
 #endif
 };
 
+/// Deassert the event bus and zero all event input fields.
+/// Called after the accept cycle so the RTL sees event_valid=0 on the commit cycle.
 static void clear_event_inputs(SimHandle* sim) {
     sim->top->event_valid = 0;
     sim->top->request_id = 0;
@@ -34,6 +39,9 @@ static void clear_event_inputs(SimHandle* sim) {
     sim->top->operation = 0;
 }
 
+/// Hold reset for `cycles` full clock periods (low then high each cycle).
+/// Clears event inputs and table debug port. Leaves rst deasserted when done.
+/// Dumps waveform samples at 2× cycle_count if tracing is enabled.
 static void apply_reset(SimHandle* sim, int cycles) {
     sim->top->rst = 1;
     clear_event_inputs(sim);
@@ -59,6 +67,8 @@ static void apply_reset(SimHandle* sim, int cycles) {
     sim->top->rst = 0;
 }
 
+/// Construct simulator state: allocate Vtop, optionally open VCD/FST trace,
+/// initialize all flops to zero (randReset(0)), then apply hardware reset.
 static SimHandle* sim_create_impl(const char* trace_path) {
 #if VM_TRACE
     if (trace_path && trace_path[0] != '\0') {
@@ -88,6 +98,7 @@ static SimHandle* sim_create_impl(const char* trace_path) {
     return sim;
 }
 
+/// Pack flat RTL metadata/hotness fields into the portable KvMetadata C struct.
 static void read_metadata_fields(
     uint8_t valid,
     uint16_t page_id,
@@ -139,6 +150,8 @@ void sim_reset(SimHandle* sim) {
     apply_reset(sim, 2);
 }
 
+/// Advance one functional clock cycle: clk 0→1 with eval() and optional trace dump.
+/// This is the time base used by Rust differential tests (2 ticks per event).
 void sim_tick(SimHandle* sim) {
     sim->top->clk = 0;
     sim->top->eval();
@@ -158,6 +171,8 @@ void sim_tick(SimHandle* sim) {
     ++sim->cycle_count;
 }
 
+/// Drive the event interface for one cycle. When event_valid=1, latches
+/// request_id, page_id, event_timestamp, and operation into the DUT inputs.
 void sim_drive_event(SimHandle* sim, int event_valid, const KvEvent* event) {
     sim->top->event_valid = event_valid ? 1 : 0;
     if (event) {
@@ -168,6 +183,7 @@ void sim_drive_event(SimHandle* sim, int event_valid, const KvEvent* event) {
     }
 }
 
+/// Return event interface to idle (event_valid=0, all fields zero).
 void sim_deassert_event(SimHandle* sim) {
     clear_event_inputs(sim);
 }
@@ -215,6 +231,9 @@ int sim_num_pages(void) {
     return KV_NUM_PAGES;
 }
 
+/// Combinational peek into table slot `index` via the simulation-only table_read port.
+/// Asserts table_read, evals once (no clock tick), reads table_* outputs, then deasserts.
+/// Used by Rust to read full table state for differential comparison.
 void sim_read_table_entry(SimHandle* sim, uint32_t index, KvMetadata* out) {
     sim->top->table_read = 1;
     sim->top->table_idx = index;

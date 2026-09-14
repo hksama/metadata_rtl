@@ -10,10 +10,16 @@ use crate::policy::PolicyConfig;
 use crate::trace_gen::{all_workload_patterns, generate_trace, TraceConfig, TracePattern, AGING_INTERVALS, ZIPF_ALPHAS};
 use crate::types::{AccessEvent, HotnessPolicy};
 
+/// Oracle window: how far ahead to look for reuse when scoring a policy.
 const LOOKAHEAD: usize = 32;
+/// Top-K overlap metric parameter.
 const TOP_K: usize = 4;
 
-/// Run a trace through the software reference model and collect evaluation metrics.
+/// Replay `trace` through the software MetadataTable and score policy quality
+/// vs the offline oracle at each access event.
+///
+/// Predicted hot = pages with hotness_score >= median score among tracked pages.
+/// Aggregates classification (precision/recall) and ranking (Spearman/Kendall/top-K).
 pub fn evaluate_policy_on_trace(
     config: &PolicyConfig,
     _pattern: TracePattern,
@@ -109,6 +115,7 @@ pub fn evaluate_policy_on_trace(
     )
 }
 
+/// Median of a score list; used as hot/cold threshold for classification.
 fn median(mut values: Vec<u32>) -> u32 {
     if values.is_empty() {
         return 0;
@@ -117,7 +124,7 @@ fn median(mut values: Vec<u32>) -> u32 {
     values[values.len() / 2]
 }
 
-/// Evaluate all policies across all standard workloads.
+/// Run all 4 policies × all standard workload patterns (Zipf sweeps 4 alpha values).
 pub fn evaluate_all_policies(base_config: &PolicyConfig) -> Vec<PolicyEvalResult> {
     let mut results = Vec::new();
 
@@ -150,7 +157,7 @@ pub fn evaluate_all_policies(base_config: &PolicyConfig) -> Vec<PolicyEvalResult
     results
 }
 
-/// Sweep aging intervals for 2-bit and 4-bit policies.
+/// Sweep AGING_INTERVALS for 2-bit and 4-bit policies on bursty workload.
 pub fn evaluate_aging_sweep(base_config: &PolicyConfig) -> Vec<PolicyEvalResult> {
     let mut results = Vec::new();
     let pattern = TracePattern::Bursty;

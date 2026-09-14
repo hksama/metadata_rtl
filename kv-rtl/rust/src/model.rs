@@ -6,7 +6,13 @@ use crate::types::{
     NUM_PAGES,
 };
 
-/// Golden software reference for multi-page metadata table + hotness engine.
+/// Golden software reference for the multi-page metadata table + hotness engine.
+///
+/// Mirrors the 2-cycle RTL pipeline:
+///   step(Some(event))  → latch (cycle N)
+///   step(None)         → commit  (cycle N+1), returns EventResult
+///
+/// Also models hw_timestamp increment and global aging ticks on idle cycles.
 #[derive(Debug, Clone)]
 pub struct MetadataTable {
     pub entries: Vec<PageMetadata>,
@@ -15,6 +21,7 @@ pub struct MetadataTable {
     pending_event: Option<AccessEvent>,
 }
 
+/// Response bundle after a committed event (matches RTL resp_* outputs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventResult {
     pub resp_valid: bool,
@@ -27,6 +34,7 @@ pub struct EventResult {
 }
 
 impl EventResult {
+    /// Default idle/no-response state.
     pub const IDLE: Self = Self {
         resp_valid: false,
         resp_error: false,
@@ -39,10 +47,12 @@ impl EventResult {
 }
 
 impl MetadataTable {
+    /// New table with default FREQUENCY policy.
     pub fn new() -> Self {
         Self::with_policy(PolicyConfig::default())
     }
 
+    /// New table with explicit hotness policy config.
     pub fn with_policy(policy_config: PolicyConfig) -> Self {
         Self {
             entries: vec![PageMetadata::INVALID; NUM_PAGES],
@@ -52,21 +62,26 @@ impl MetadataTable {
         }
     }
 
+    /// Clear all entries and pending state; keep policy config.
     pub fn reset(&mut self) {
         let config = self.policy_config;
         *self = Self::with_policy(config);
     }
 
+    /// Linear scan: index of valid entry matching page_id, or None.
     pub fn lookup_page(&self, page_id: u16) -> Option<usize> {
         self.entries
             .iter()
             .position(|e| e.valid && e.page_id == page_id)
     }
 
+    /// Lowest-index free slot (!valid), matching RTL alloc policy.
     pub fn find_free_entry(&self) -> Option<usize> {
         self.entries.iter().position(|e| !e.valid)
     }
 
+    /// Advance one simulation cycle. Handles timestamp, aging ticks,
+    /// pending-event commit, and new event latch. Returns result only on commit.
     pub fn step(&mut self, event: Option<AccessEvent>) -> EventResult {
         self.hw_timestamp = self.hw_timestamp.wrapping_add(1);
 
@@ -90,11 +105,13 @@ impl MetadataTable {
         EventResult::IDLE
     }
 
+    /// Convenience: latch + commit in two steps (what tests usually call).
     pub fn submit_event(&mut self, event: AccessEvent) -> EventResult {
         let _ = self.step(Some(event));
         self.step(None)
     }
 
+    /// Global aging: halve all aging counters, then refresh hotness scores.
     fn apply_global_aging(&mut self) {
         for entry in self.entries.iter_mut().filter(|e| e.valid) {
             entry.aging_counter = policy_update_aging(
@@ -111,6 +128,7 @@ impl MetadataTable {
         );
     }
 
+    /// Commit a latched event; may trigger aging tick before handling op.
     fn apply_committed_event(&mut self, event: AccessEvent) -> EventResult {
         if should_age_tick(
             self.policy_config.policy,
@@ -127,6 +145,7 @@ impl MetadataTable {
         }
     }
 
+    /// ALLOCATE: reject duplicate or full table; else init entry with refcount=1.
     fn apply_allocate(&mut self, event: AccessEvent) -> EventResult {
         if self.lookup_page(event.page_id).is_some() {
             return EventResult {
@@ -172,6 +191,8 @@ impl MetadataTable {
         }
     }
 
+    /// ACCESS/READ/WRITE: hit updates count, last_access, aging, hotness;
+    /// miss returns resp_miss without changing table.
     fn apply_access(&mut self, event: AccessEvent) -> EventResult {
         let Some(idx) = self.lookup_page(event.page_id) else {
             return EventResult {
@@ -211,6 +232,7 @@ impl MetadataTable {
         }
     }
 
+    /// RELEASE: decrement refcount; error if page missing or refcount already 0.
     fn apply_release(&mut self, event: AccessEvent) -> EventResult {
         let Some(idx) = self.lookup_page(event.page_id) else {
             return EventResult {
@@ -247,6 +269,7 @@ impl Default for MetadataTable {
     }
 }
 
+/// Backward-compatible alias from checkpoint 1.
 pub type PageTracker = MetadataTable;
 
 #[cfg(test)]

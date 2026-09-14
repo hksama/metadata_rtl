@@ -1,5 +1,7 @@
 //! Shared widths and encodings — must match `rtl/kv_pkg.sv` defaults.
 
+/// Bit widths shared between Rust reference model and SystemVerilog `kv_pkg`.
+/// Must stay in sync with Verilator build (-GNUM_PAGES, etc.).
 pub struct Widths {
     pub page_id: u32,
     pub request_id: u32,
@@ -10,6 +12,7 @@ pub struct Widths {
     pub aging_counter: u32,
 }
 
+/// Default table capacity. Must match `NUM_PAGES` passed to Verilator.
 pub const NUM_PAGES: usize = 16;
 pub const DEFAULT_SCORE_WIDTH: u32 = 8;
 pub const DEFAULT_AGING_INTERVAL: u32 = 64;
@@ -28,6 +31,7 @@ pub const COUNTER_MAX: u16 = u16::MAX;
 pub const REFCOUNT_MAX: u8 = u8::MAX;
 pub const TIMESTAMP_MAX: u16 = u16::MAX;
 
+/// Compile-time hotness policy selector (mirrors kv_pkg POLICY_* localparams).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum HotnessPolicy {
@@ -38,6 +42,7 @@ pub enum HotnessPolicy {
 }
 
 impl HotnessPolicy {
+    /// Parse Makefile/CLI policy name (FREQUENCY, AGING2, AGING4, LRU).
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_uppercase().as_str() {
             "FREQUENCY" | "FREQ" => Some(Self::Frequency),
@@ -48,6 +53,7 @@ impl HotnessPolicy {
         }
     }
 
+    /// Stable string for CSV output and logging.
     pub fn name(self) -> &'static str {
         match self {
             Self::Frequency => "FREQUENCY",
@@ -57,6 +63,7 @@ impl HotnessPolicy {
         }
     }
 
+    /// All four checkpoint-3 policies for evaluation sweeps.
     pub fn all() -> [Self; 4] {
         [
             Self::Frequency,
@@ -66,6 +73,7 @@ impl HotnessPolicy {
         ]
     }
 
+    /// Extra aging-counter storage bits required by this policy (0, 2, or 4).
     pub fn aging_counter_bits(self) -> u32 {
         match self {
             Self::Aging2Bit => 2,
@@ -75,6 +83,7 @@ impl HotnessPolicy {
     }
 }
 
+/// Hardware opcodes — must match kv_pkg OP_* values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Operation {
@@ -86,6 +95,7 @@ pub enum Operation {
 }
 
 impl Operation {
+    /// Decode raw opcode byte from simulator; None if invalid.
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Read),
@@ -97,6 +107,7 @@ impl Operation {
         }
     }
 
+    /// True for READ, WRITE, ACCESS — operations that touch access_count/last_access.
     pub fn is_access(self) -> bool {
         matches!(self, Self::Read | Self::Write | Self::Access)
     }
@@ -109,6 +120,7 @@ pub enum PageState {
     Valid = 1,
 }
 
+/// One input transaction to the metadata engine (matches RTL event port).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AccessEvent {
     pub request_id: u16,
@@ -117,6 +129,7 @@ pub struct AccessEvent {
     pub operation: Operation,
 }
 
+/// One metadata table entry, including CP3 hotness fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageMetadata {
     pub page_id: u16,
@@ -131,6 +144,7 @@ pub struct PageMetadata {
 }
 
 impl PageMetadata {
+    /// Sentinel for invalid/miss responses and empty slots.
     pub const INVALID: Self = Self {
         page_id: 0,
         request_id: 0,
@@ -144,14 +158,17 @@ impl PageMetadata {
     };
 }
 
+/// Saturating increment matching RTL `sat_inc_u` (access_count).
 pub fn sat_inc_u16(value: u16) -> u16 {
     value.saturating_add(1)
 }
 
+/// Saturating increment matching RTL `sat_inc_ref` (refcount on allocate).
 pub fn sat_inc_u8(value: u8) -> u8 {
     value.saturating_add(1)
 }
 
+/// Saturating decrement matching RTL `sat_dec_ref` (refcount on release).
 pub fn sat_dec_u8(value: u8) -> u8 {
     value.saturating_sub(1)
 }

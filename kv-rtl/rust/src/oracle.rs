@@ -7,7 +7,8 @@ use std::collections::HashMap;
 
 use crate::types::AccessEvent;
 
-/// Future reuse count for each page within a lookahead window.
+/// Count how many times each page_id appears as an ACCESS in trace[position..position+lookahead).
+/// Used as ground-truth "future reuse" signal for policy evaluation (not in RTL).
 pub fn future_reuse_counts(
     trace: &[AccessEvent],
     position: usize,
@@ -23,7 +24,7 @@ pub fn future_reuse_counts(
     counts
 }
 
-/// Binary hot/cold labels from future reuse (1 = will be reused, 0 = cold).
+/// Binary labels: page is "oracle-hot" if it will be accessed at least once in the lookahead window.
 pub fn future_hot_labels(
     trace: &[AccessEvent],
     position: usize,
@@ -37,7 +38,7 @@ pub fn future_hot_labels(
         .collect()
 }
 
-/// Continuous ground-truth hotness = future reuse count within lookahead.
+/// Continuous oracle scores: raw future access count per page (for rank correlation).
 pub fn future_hotness_scores(
     trace: &[AccessEvent],
     position: usize,

@@ -6,6 +6,8 @@
 
 use crate::types::{HotnessPolicy, PageMetadata};
 
+/// Runtime/build configuration for hotness policy behavior.
+/// Mirrors Verilator -GPOLICY, -GSCORE_WIDTH, -GAGING_INTERVAL.
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyConfig {
     pub policy: HotnessPolicy,
@@ -23,7 +25,11 @@ impl Default for PolicyConfig {
     }
 }
 
-/// policy_update(access_event, metadata) — update aging counter on access or global age tick.
+/// `policy_update()`: update aging counter on page access or global aging tick.
+///
+/// - On access (aging policies): counter = min(counter + 1, max) where max is 3 or 15.
+/// - On global age tick: counter >>= 1.
+/// - Frequency/LRU: counter unchanged here (LRU uses last_access instead).
 pub fn policy_update_aging(
     policy: HotnessPolicy,
     aging_in: u8,
@@ -43,7 +49,15 @@ pub fn policy_update_aging(
     next
 }
 
-/// policy_score(metadata) — compute integer hotness score.
+/// `policy_score()`: compute integer hotness from current metadata.
+///
+/// | Policy    | Score                                   |
+/// |-----------|-----------------------------------------|
+/// | Frequency | access_count                            |
+/// | Aging2/4  | aging_counter (low 2 or 4 bits)         |
+/// | ApproxLru | MAX_TIMESTAMP - (now - last_access)     |
+///
+/// Result is truncated to `score_width` bits. Invalid entries score 0.
 pub fn policy_score(
     policy: HotnessPolicy,
     score_width: u32,
@@ -68,6 +82,7 @@ pub fn policy_score(
     truncate_score(raw, score_width)
 }
 
+/// Mask raw score to SCORE_WIDTH bits (matches RTL truncation).
 fn truncate_score(raw: u32, score_width: u32) -> u8 {
     let mask = if score_width >= 32 {
         u32::MAX
@@ -77,7 +92,8 @@ fn truncate_score(raw: u32, score_width: u32) -> u8 {
     (raw & mask) as u8
 }
 
-/// Apply global aging tick if the hw timestamp hits the configured interval.
+/// True when hw_timestamp is a non-zero multiple of aging_interval
+/// and policy uses global aging (2-bit or 4-bit only).
 pub fn should_age_tick(policy: HotnessPolicy, hw_timestamp: u16, aging_interval: u32) -> bool {
     if aging_interval == 0 {
         return false;
@@ -87,7 +103,7 @@ pub fn should_age_tick(policy: HotnessPolicy, hw_timestamp: u16, aging_interval:
         && (hw_timestamp as u32 % aging_interval) == 0
 }
 
-/// Refresh hotness scores for all valid entries after metadata update.
+/// Recompute hotness_score for every valid table entry (e.g. after global aging).
 pub fn refresh_scores(
     entries: &mut [PageMetadata],
     config: &PolicyConfig,
@@ -99,7 +115,7 @@ pub fn refresh_scores(
     }
 }
 
-/// Estimate per-page metadata storage bits for a policy.
+/// Rough hardware cost model for comparing policies (metadata bits, ops/access).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HardwareCost {
     pub metadata_bits_per_page: u32,
@@ -110,6 +126,7 @@ pub struct HardwareCost {
     pub state_bits: u32,
 }
 
+/// Estimate storage and combinational logic cost for a policy configuration.
 pub fn estimate_hardware_cost(config: &PolicyConfig) -> HardwareCost {
     let base_bits = 16 + 16 + 16 + 16 + 8 + 1 + 2; // page_id, req_id, count, last_access, refcount, valid, state
     let aging_bits = config.policy.aging_counter_bits();

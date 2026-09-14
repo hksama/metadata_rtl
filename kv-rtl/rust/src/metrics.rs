@@ -6,6 +6,7 @@ use crate::oracle::future_hotness_scores;
 use crate::policy::{estimate_hardware_cost, PolicyConfig};
 use crate::types::{AccessEvent, HotnessPolicy, Operation};
 
+/// Basic simulation counters (events, cycles, hits, misses, allocs, releases, errors).
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
     pub events: u64,
@@ -17,6 +18,7 @@ pub struct Metrics {
     pub errors: u64,
 }
 
+/// Hot/cold classification quality vs oracle labels.
 #[derive(Debug, Default, Clone)]
 pub struct ClassificationMetrics {
     pub hot_precision: f64,
@@ -29,6 +31,7 @@ pub struct ClassificationMetrics {
     pub tn_cold: u64,
 }
 
+/// Rank correlation metrics vs oracle future reuse scores.
 #[derive(Debug, Default, Clone)]
 pub struct RankingMetrics {
     pub spearman: f64,
@@ -36,6 +39,7 @@ pub struct RankingMetrics {
     pub top_k_overlap: f64,
 }
 
+/// Full result row for one (policy, workload) experiment.
 #[derive(Debug, Clone)]
 pub struct PolicyEvalResult {
     pub policy: HotnessPolicy,
@@ -47,6 +51,7 @@ pub struct PolicyEvalResult {
 }
 
 impl Metrics {
+    /// Record one committed event outcome.
     pub fn record_event(&mut self, op: Operation, hit: bool, miss: bool, error: bool) {
         self.events += 1;
         if hit {
@@ -69,6 +74,7 @@ impl Metrics {
         self.cycles += cycles;
     }
 
+    /// Average cycles per event (typically ~3 in harness due to idle ticks).
     pub fn cycles_per_event(&self) -> f64 {
         if self.events == 0 {
             0.0
@@ -77,6 +83,7 @@ impl Metrics {
         }
     }
 
+    /// Write checkpoint metrics CSV (events, hits, misses, …).
     pub fn write_csv(&self, path: &Path) -> std::io::Result<()> {
         let mut file = File::create(path)?;
         writeln!(file, "metric,value")?;
@@ -92,7 +99,7 @@ impl Metrics {
     }
 }
 
-/// Compute classification metrics comparing predicted hot pages vs oracle labels.
+/// Compute TP/FP/FN/TN and precision/recall for predicted-hot vs oracle-hot pages.
 pub fn classification_metrics(
     predicted_hot: &[u16],
     oracle_hot: &[u16],
@@ -129,7 +136,7 @@ pub fn classification_metrics(
     }
 }
 
-/// Spearman rank correlation between predicted and oracle scores.
+/// Spearman rank correlation coefficient (-1..1) between predicted and oracle score vectors.
 pub fn spearman_correlation(predicted: &[u32], oracle: &[u32]) -> f64 {
     if predicted.len() != oracle.len() || predicted.len() < 2 {
         return 0.0;
@@ -145,7 +152,7 @@ pub fn spearman_correlation(predicted: &[u32], oracle: &[u32]) -> f64 {
     1.0 - (6.0 * sum_d2) / (n * (n * n - 1.0))
 }
 
-/// Kendall tau-b style concordance (simplified for equal-length vectors).
+/// Simplified Kendall tau: fraction of concordant minus discordant page pairs.
 pub fn kendall_correlation(predicted: &[u32], oracle: &[u32]) -> f64 {
     if predicted.len() != oracle.len() || predicted.len() < 2 {
         return 0.0;
@@ -172,7 +179,7 @@ pub fn kendall_correlation(predicted: &[u32], oracle: &[u32]) -> f64 {
     }
 }
 
-/// Fraction of top-K pages shared between predicted and oracle rankings.
+/// |predicted top-K ∩ oracle top-K| / K — overlap of hottest page sets.
 pub fn top_k_overlap(predicted: &[(u16, u32)], oracle: &[(u16, u32)], k: usize) -> f64 {
     let mut pred_sorted = predicted.to_vec();
     pred_sorted.sort_by(|a, b| b.1.cmp(&a.1));
@@ -192,6 +199,7 @@ pub fn top_k_overlap(predicted: &[(u16, u32)], oracle: &[(u16, u32)], k: usize) 
     }
 }
 
+/// Assign average ranks with tie handling (helper for Spearman).
 fn ranks(values: &[u32]) -> Vec<f64> {
     let mut indexed: Vec<(usize, u32)> = values.iter().copied().enumerate().collect();
     indexed.sort_by_key(|&(_, v)| v);
@@ -219,7 +227,7 @@ fn safe_div(num: u64, den: u64) -> f64 {
     }
 }
 
-/// Evaluate ranking quality at a single trace position.
+/// Ranking metrics at a single trace position using oracle future_hotness_scores.
 pub fn evaluate_at_position(
     trace: &[AccessEvent],
     position: usize,
@@ -239,6 +247,7 @@ pub fn evaluate_at_position(
     }
 }
 
+/// Export policy evaluation sweep results to CSV.
 pub fn write_policy_eval_csv(results: &[PolicyEvalResult], path: &Path) -> std::io::Result<()> {
     let mut file = File::create(path)?;
     writeln!(
@@ -267,6 +276,7 @@ pub fn write_policy_eval_csv(results: &[PolicyEvalResult], path: &Path) -> std::
     Ok(())
 }
 
+/// Assemble a PolicyEvalResult with hardware cost estimate attached.
 pub fn build_policy_eval_result(
     policy: HotnessPolicy,
     workload: &str,
